@@ -4,11 +4,6 @@ os:
 sudo: false
 
 script:
- - mkdir build
- - pushd build
- - cmake .. -DCMAKE_BUILD_TYPE=RELEASE -DWITH_COVERAGE=on || exit 1
+ - cmake . -DCMAKE_BUILD_TYPE=RELEASE -DWITH_COVERAGE=on || exit 1
  - cmake --build . -- -j2 || exit 1
- - popd
- - cp build/lily .
- - cp build/pre-commit-tests .
  - ./pre-commit-tests || exit 1
