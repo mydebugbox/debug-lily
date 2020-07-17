@@ -1,0 +1,21 @@
+import bench
+
+define bench_test
+{
+    var begin = 0
+    var end = bench.parameter(999999, :quiet 50000)
+    var map: Hash[Integer, Integer] = []
+    var sum = 0
+    var start = bench.start()
+
+    for i in begin...end: {
+        map[i] = i
+    }
+
+    map.each_pair(|k, v| sum += v )
+
+    bench.log(sum)
+    bench.finish(start)
+}
+
+bench.run(bench_test)

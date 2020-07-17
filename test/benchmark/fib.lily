@@ -1,0 +1,26 @@
+import bench
+
+define fib(n: Integer): Integer
+{
+    if n < 2: {
+        return n
+    else:
+        return fib(n - 1) + fib(n - 2)
+    }
+}
+
+define bench_test
+{
+    var begin = 1
+    var end = bench.parameter(5, :quiet 1)
+    var n = bench.parameter(28, :quiet 20)
+    var start = bench.start()
+
+    for i in begin...end: {
+        n |> fib |> bench.log
+    }
+
+    bench.finish(start)
+}
+
+bench.run(bench_test)
