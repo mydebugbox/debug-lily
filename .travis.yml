@@ -43,7 +43,6 @@ jobs:
 
     - os: osx
       osx_image: xcode8
-      dist: bionic
       env:
         - MATRIX_EVAL=""
 
