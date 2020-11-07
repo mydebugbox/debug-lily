@@ -1,7 +1,35 @@
-language: cpp
-os:
- - osx
-sudo: false
+language: c
+
+# This is for the mandatory initial job.
+os: linux
+dist: bionic
+arch: amd64
+
+# These are for the ancillary jobs.
+jobs:
+  include:
+    - os: linux
+      arch: arm64
+      env:
+        - MATRIX_EVAL=""
+
+    - os: linux
+      arch: ppc64le
+      env:
+        - MATRIX_EVAL=""
+
+    - os: linux
+      arch: s390x
+      env:
+        - MATRIX_EVAL=""
+
+    - os: osx
+      osx_image: xcode8
+      env:
+        - MATRIX_EVAL="brew install gcc && CC=gcc-7 && CXX=g++-7"
+
+before_install:
+ - eval "${MATRIX_EVAL}"
 
 script:
  - cmake . -DCMAKE_BUILD_TYPE=RELEASE -DWITH_COVERAGE=on || exit 1
