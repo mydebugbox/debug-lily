@@ -1,7 +1,7 @@
-#include "lily_vm.h"
-#include "lily_parser.h"
 #include "lily_core_types.h"
+#include "lily_parser.h"
 #include "lily_symtab.h"
+#include "lily_vm.h"
 
 #include "lily.h"
 #define LILY_NO_EXPORT
@@ -160,42 +160,53 @@ typedef struct {
 
 static void destroy_ClassEntry(lily_introspect_ClassEntry *c)
 {
+    (void)c;
 }
 
 static void destroy_EnumEntry(lily_introspect_EnumEntry *c)
 {
+    (void)c;
 }
 
 static void destroy_FunctionEntry(lily_introspect_FunctionEntry *f)
 {
+    (void)f;
 }
 
 static void destroy_MethodEntry(lily_introspect_MethodEntry *m)
 {
+    (void)m;
 }
 
 static void destroy_ModuleEntry(lily_introspect_ModuleEntry *m)
 {
+    (void)m;
 }
 
 static void destroy_PropertyEntry(lily_introspect_PropertyEntry *p)
 {
+    (void)p;
 }
 
 static void destroy_VarEntry(lily_introspect_VarEntry *v)
 {
+    (void)v;
 }
 
 static void destroy_VariantEntry(lily_introspect_VariantEntry *v)
 {
+    (void)v;
 }
 
 static void destroy_TypeEntry(lily_introspect_TypeEntry *t)
 {
+    (void)t;
 }
 
 static int allow_all(void *any)
 {
+    (void)any;
+
     return 1;
 }
 
@@ -380,7 +391,7 @@ static void return_doc(lily_state *s, uint16_t doc_id)
 {
     const char *str = "";
 
-    if (doc_id != (uint16_t)-1)
+    if (doc_id != UINT16_MAX)
         str = s->gs->parser->doc->data[doc_id][0];
 
     lily_push_string(s, str);
@@ -391,7 +402,7 @@ static char **get_doc_text(lily_state *s, uint16_t doc_id)
 {
     char **text = NULL;
 
-    if (doc_id != (uint16_t)-1)
+    if (doc_id != UINT16_MAX)
         text = s->gs->parser->doc->data[doc_id];
 
     return text;
@@ -556,7 +567,7 @@ void lily_introspect_FunctionEntry_generics(lily_state *s)
 {
     UNPACK_FIRST_ARG(FunctionEntry, lily_var *);
 
-    if (entry->doc_id == (uint16_t)-1) {
+    if (entry->doc_id == UINT16_MAX) {
         lily_push_list(s, 0);
         lily_return_top(s);
         return;
@@ -719,7 +730,7 @@ void lily_introspect_ClassEntry_generics(lily_state *s)
        The second test blocks magic classes (Function and Tuple), which have
        a count of -1 to denote that they take any amount. The lack of a cast on
        the second is intended, as the count is signed. */
-    if (entry->doc_id == (uint16_t)-1 ||
+    if (entry->doc_id == UINT16_MAX ||
         entry->generic_count == -1) {
         lily_push_list(s, 0);
         lily_return_top(s);

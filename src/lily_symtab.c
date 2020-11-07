@@ -2,12 +2,10 @@
 #include <string.h>
 
 #include "lily.h"
-
-#include "lily_symtab.h"
-#include "lily_vm.h"
-#include "lily_value_flags.h"
 #include "lily_alloc.h"
-#include "lily_value_raw.h"
+#include "lily_symtab.h"
+#include "lily_value.h"
+#include "lily_vm.h"
 
 /* If a String/ByteString is longer than this, don't do duplicate lookups.
    It's probably unique and dup checking is a waste of time. */
@@ -22,23 +20,25 @@
  *                          |_|
  */
 
+static lily_value_stack *new_value_stack(uint16_t);
+
 lily_symtab *lily_new_symtab(void)
 {
     lily_symtab *symtab = lily_malloc(sizeof(*symtab));
 
-    symtab->next_class_id = 1;
-    symtab->hidden_function_chain = NULL;
     symtab->hidden_class_chain = NULL;
-    symtab->literals = lily_new_value_stack();
+    symtab->hidden_function_chain = NULL;
+    symtab->literals = new_value_stack(4);
+    symtab->next_class_id = 1;
     symtab->next_global_id = 0;
 
     return symtab;
 }
 
-void lily_set_builtin(lily_symtab *symtab, lily_module_entry *builtin)
+void lily_set_prelude(lily_symtab *symtab, lily_module_entry *prelude)
 {
-    symtab->builtin_module = builtin;
-    symtab->active_module = builtin;
+    symtab->prelude_module = prelude;
+    symtab->active_module = prelude;
 }
 
 static void free_boxed_syms_since(lily_boxed_sym *sym, lily_boxed_sym *stop)
@@ -140,8 +140,11 @@ static void hide_classes(lily_symtab *symtab, lily_class *class_iter,
 
 static void free_literals(lily_value_stack *literals)
 {
-    while (lily_vs_pos(literals)) {
-        lily_literal *lit = (lily_literal *)lily_vs_pop(literals);
+    lily_value **data = literals->data;
+    uint16_t i;
+
+    for (i = 0;i < literals->pos;i++) {
+        lily_literal *lit = (lily_literal *)data[i];
 
         /* These literals stay alive by having one ref since they live in
            symtab's literal space. They can go away now. */
@@ -154,7 +157,8 @@ static void free_literals(lily_value_stack *literals)
         lily_free(lit);
     }
 
-    lily_free_value_stack(literals);
+    lily_free(literals->data);
+    lily_free(literals);
 }
 
 void lily_hide_module_symbols(lily_symtab *symtab, lily_module_entry *entry)
@@ -227,6 +231,36 @@ void lily_free_symtab(lily_symtab *symtab)
     Storing of (defined) functions is also here, because a function cannot be
     altered once it's defined. **/
 
+lily_value_stack *new_value_stack(uint16_t initial)
+{
+    lily_value_stack *result = lily_malloc(sizeof(*result));
+
+    result->data = lily_malloc(initial * sizeof(*result->data));
+    result->pos = 0;
+    result->size = initial;
+
+    return result;
+}
+
+static void push_literal(lily_symtab *symtab, lily_value *value)
+{
+    lily_value_stack *literals = symtab->literals;
+
+    if (literals->pos + 1 > literals->size) {
+        literals->size *= 2;
+        literals->data = lily_realloc(literals->data,
+                literals->size * sizeof(*literals->data));
+    }
+
+    literals->data[literals->pos] = value;
+    literals->pos++;
+}
+
+lily_value *lily_literal_at(lily_symtab *symtab, uint16_t index)
+{
+    return symtab->literals->data[index];
+}
+
 static lily_value *new_value_of_bytestring(lily_bytestring_val *bv)
 {
     lily_value *v = lily_malloc(sizeof(*v));
@@ -275,13 +309,13 @@ static lily_value *new_value_of_unit(void)
 /* Literals take advantage of lily_value having extra padding in it. That extra
    padding will have the index of the next literal of that kind. The only
    trouble is finding the first one with the given flag to start with. */
-static lily_literal *first_lit_of(lily_value_stack *vs, int to_find)
+static lily_literal *first_lit_of(lily_value_stack *literals, uint32_t to_find)
 {
-    int stop = lily_vs_pos(vs);
-    int i;
+    lily_value **data = literals->data;
+    uint16_t i;
 
-    for (i = 0;i < stop;i++) {
-        lily_literal *lit = (lily_literal *)lily_vs_nth(vs, i);
+    for (i = 0;i < literals->pos;i++) {
+        lily_literal *lit = (lily_literal *)data[i];
         if (FLAGS_TO_BASE(lit) == to_find)
             return lit;
     }
@@ -297,22 +331,22 @@ lily_literal *lily_get_integer_literal(lily_symtab *symtab, int64_t int_val)
         if (iter->value.integer == int_val)
             return iter;
 
-        int next = iter->next_index;
+        uint16_t next = iter->next_index;
 
         if (next == 0)
             break;
         else
-            iter = (lily_literal *)lily_vs_nth(symtab->literals, next);
+            iter = (lily_literal *)lily_literal_at(symtab, next);
     }
 
     if (iter)
-        iter->next_index = lily_vs_pos(symtab->literals);
+        iter->next_index = symtab->literals->pos;
 
     lily_literal *v = (lily_literal *)new_value_of_integer(int_val);
-    v->reg_spot = lily_vs_pos(symtab->literals);
+    v->reg_spot = symtab->literals->pos;
     v->next_index = 0;
 
-    lily_vs_push(symtab->literals, (lily_value *)v);
+    push_literal(symtab, (lily_value *)v);
     return (lily_literal *)v;
 }
 
@@ -324,27 +358,27 @@ lily_literal *lily_get_double_literal(lily_symtab *symtab, double dbl_val)
         if (iter->value.doubleval == dbl_val)
             return iter;
 
-        int next = iter->next_index;
+        uint16_t next = iter->next_index;
 
         if (next == 0)
             break;
         else
-            iter = (lily_literal *)lily_vs_nth(symtab->literals, next);
+            iter = (lily_literal *)lily_literal_at(symtab, next);
     }
 
     if (iter)
-        iter->next_index = lily_vs_pos(symtab->literals);
+        iter->next_index = symtab->literals->pos;
 
     lily_literal *v = (lily_literal *)new_value_of_double(dbl_val);
-    v->reg_spot = lily_vs_pos(symtab->literals);
+    v->reg_spot = symtab->literals->pos;
     v->next_index = 0;
 
-    lily_vs_push(symtab->literals, (lily_value *)v);
+    push_literal(symtab, (lily_value *)v);
     return (lily_literal *)v;
 }
 
 lily_literal *lily_get_bytestring_literal(lily_symtab *symtab,
-        const char *want_string, int len)
+        const char *want_string, uint32_t len)
 {
     lily_literal *iter = first_lit_of(symtab->literals, V_BYTESTRING_BASE);
 
@@ -354,37 +388,37 @@ lily_literal *lily_get_bytestring_literal(lily_symtab *symtab,
                 memcmp(iter->value.string->string, want_string, len) == 0)
                 return iter;
 
-            int next = iter->next_index;
+            uint16_t next = iter->next_index;
 
             if (next == 0)
                 break;
             else
-                iter = (lily_literal *)lily_vs_nth(symtab->literals, next);
+                iter = (lily_literal *)lily_literal_at(symtab, next);
         }
     }
     else {
         while (iter) {
-            int next = iter->next_index;
+            uint16_t next = iter->next_index;
 
             if (next == 0)
                 break;
             else
-                iter = (lily_literal *)lily_vs_nth(symtab->literals, next);
+                iter = (lily_literal *)lily_literal_at(symtab, next);
         }
     }
 
     if (iter)
-        iter->next_index = lily_vs_pos(symtab->literals);
+        iter->next_index = symtab->literals->pos;
 
     lily_bytestring_val *sv = lily_new_bytestring_raw(want_string, len);
     lily_literal *v = (lily_literal *)new_value_of_bytestring(sv);
 
     /* Drop the derefable marker. */
     v->flags = V_BYTESTRING_FLAG | V_BYTESTRING_BASE;
-    v->reg_spot = lily_vs_pos(symtab->literals);
+    v->reg_spot = symtab->literals->pos;
     v->next_index = 0;
 
-    lily_vs_push(symtab->literals, (lily_value *)v);
+    push_literal(symtab, (lily_value *)v);
     return (lily_literal *)v;
 }
 
@@ -400,37 +434,37 @@ lily_literal *lily_get_string_literal(lily_symtab *symtab,
                 strcmp(iter->value.string->string, want_string) == 0)
                 return iter;
 
-            int next = iter->next_index;
+            uint16_t next = iter->next_index;
 
             if (next == 0)
                 break;
             else
-                iter = (lily_literal *)lily_vs_nth(symtab->literals, next);
+                iter = (lily_literal *)lily_literal_at(symtab, next);
         }
     }
     else {
         while (iter) {
-            int next = iter->next_index;
+            uint16_t next = iter->next_index;
 
             if (next == 0)
                 break;
             else
-                iter = (lily_literal *)lily_vs_nth(symtab->literals, next);
+                iter = (lily_literal *)lily_literal_at(symtab, next);
         }
     }
 
     if (iter)
-        iter->next_index = lily_vs_pos(symtab->literals);
+        iter->next_index = symtab->literals->pos;
 
     lily_string_val *sv = lily_new_string_raw(want_string);
     lily_literal *v = (lily_literal *)new_value_of_string(sv);
 
     /* Drop the derefable marker. */
     v->flags = V_STRING_FLAG | V_STRING_BASE;
-    v->reg_spot = lily_vs_pos(symtab->literals);
+    v->reg_spot = symtab->literals->pos;
     v->next_index = 0;
 
-    lily_vs_push(symtab->literals, (lily_value *)v);
+    push_literal(symtab, (lily_value *)v);
     return (lily_literal *)v;
 }
 
@@ -440,14 +474,21 @@ lily_literal *lily_get_unit_literal(lily_symtab *symtab)
 
     if (lit == NULL) {
         lily_literal *v = (lily_literal *)new_value_of_unit();
-        v->reg_spot = lily_vs_pos(symtab->literals);
+        v->reg_spot = symtab->literals->pos;
         v->next_index = 0;
 
         lit = v;
-        lily_vs_push(symtab->literals, (lily_value *)v);
+        push_literal(symtab, (lily_value *)v);
     }
 
     return lit;
+}
+
+void lily_new_function_literal(lily_symtab *symtab, lily_var *var,
+        lily_value *v)
+{
+    var->reg_spot = symtab->literals->pos;
+    push_literal(symtab, v);
 }
 
 /***
@@ -684,9 +725,9 @@ lily_module_entry *lily_find_module(lily_module_entry *module, const char *name)
 lily_module_entry *lily_find_module_by_path(lily_symtab *symtab,
         const char *path)
 {
-    /* Modules are linked starting after builtin. Skip that, it's not what's
+    /* Modules are linked starting after prelude. Skip that, it's not what's
        being looked for. */
-    lily_module_entry *module_iter = symtab->builtin_module->next;
+    lily_module_entry *module_iter = symtab->prelude_module->next;
     size_t len = strlen(path);
 
     while (module_iter) {
@@ -704,9 +745,9 @@ lily_module_entry *lily_find_module_by_path(lily_symtab *symtab,
 lily_module_entry *lily_find_registered_module(lily_symtab *symtab,
         const char *name)
 {
-    /* Start after the builtin module because nothing actually wants the builtin
+    /* Start after the prelude module because nothing actually wants the prelude
        module. */
-    lily_module_entry *module_iter = symtab->builtin_module->next;
+    lily_module_entry *module_iter = symtab->prelude_module->next;
 
     while (module_iter) {
         if (module_iter->flags & MODULE_IS_REGISTERED &&
@@ -749,7 +790,7 @@ lily_class *lily_new_raw_class(const char *name, uint16_t line_num)
     new_class->parent = NULL;
     new_class->shorthash = shorthash_for_name(name);
     new_class->line_num = line_num;
-    new_class->doc_id = (uint16_t)-1;
+    new_class->doc_id = UINT16_MAX;
     new_class->name = name_copy;
     new_class->generic_count = 0;
     new_class->prop_count = 0;
@@ -817,7 +858,7 @@ lily_prop_entry *lily_add_class_property(lily_class *cls, lily_type *type,
     entry->shorthash = shorthash_for_name(entry_name);
     entry->id = cls->prop_count;
     entry->line_num = line_num;
-    entry->doc_id = (uint16_t)-1;
+    entry->doc_id = UINT16_MAX;
     entry->parent = cls;
     cls->prop_count++;
 
@@ -897,7 +938,7 @@ void lily_register_classes(lily_symtab *symtab, lily_vm_state *vm)
 {
     lily_vm_ensure_class_table(vm, symtab->next_class_id + 1);
 
-    lily_module_entry *module_iter = symtab->builtin_module;
+    lily_module_entry *module_iter = symtab->prelude_module;
     while (module_iter) {
         lily_class *class_iter = module_iter->class_chain;
         while (class_iter) {

@@ -1,20 +1,17 @@
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <errno.h>
 
 #include "lily.h"
-
+#include "lily_alloc.h"
 #include "lily_config.h"
+#include "lily_int_opcode.h"
 #include "lily_library.h"
 #include "lily_parser.h"
 #include "lily_parser_data.h"
 #include "lily_string_pile.h"
-#include "lily_value_flags.h"
-#include "lily_value_raw.h"
-#include "lily_alloc.h"
-
-#include "lily_int_opcode.h"
+#include "lily_value.h"
 
 #define NEED_NEXT_TOK(expected) \
 lily_next_token(lex); \
@@ -55,9 +52,9 @@ extern void lily_prelude_register(lily_vm_state *);
     different phases:
 
     * Create raiser (it won't be used here).
-    * Create symtab to receive builtin classes/methods/etc.
-    * Create the builtin module, to give to symtab.
-    * Load the builtin module.
+    * Create symtab to receive prelude classes/methods/etc.
+    * Create the prelude module, to give to symtab.
+    * Load the prelude module.
     * Initialize other parts of the interpreter.
     * Link different parts of the interpreter up (sorry).
     * Create the first module (parsed files/strings will become the root).
@@ -72,7 +69,7 @@ extern void lily_prelude_register(lily_vm_state *);
     API functions can be found at the bottom of this file. **/
 static lily_module_entry *new_module(lily_parse_state *);
 static void create_main_func(lily_parse_state *);
-static void mark_builtin_modules(lily_parse_state *);
+static void mark_prelude_modules(lily_parse_state *);
 void lily_module_register(lily_state *, const char *, const char **,
         lily_call_entry_func *);
 void lily_default_import_func(lily_state *, const char *);
@@ -86,8 +83,9 @@ typedef struct {
     lily_class *cls;
     lily_item *result;
     lily_module_entry *saved_active;
-    int index;
-    int saved_generics;
+    uint16_t saved_generics;
+    uint16_t index;
+    uint32_t pad;
 } lily_dyna_state;
 
 typedef struct lily_rewind_state_
@@ -139,10 +137,10 @@ typedef struct lily_import_state_ {
     uint32_t pad;
 } lily_import_state;
 
-extern const char *lily_builtin_info_table[];
-extern lily_call_entry_func lily_builtin_call_table[];
+extern const char *lily_prelude_info_table[];
+extern lily_call_entry_func lily_prelude_call_table[];
 
-void lily_init_pkg_builtin(lily_symtab *);
+void lily_init_pkg_prelude(lily_symtab *);
 
 void lily_config_init(lily_config *conf)
 {
@@ -168,67 +166,87 @@ void lily_config_init(lily_config *conf)
 lily_state *lily_new_state(lily_config *config)
 {
     lily_parse_state *parser = lily_malloc(sizeof(*parser));
-    parser->module_top = NULL;
-    parser->module_start = NULL;
+
+    /* Start with the simple parts of parser. */
     parser->config = config;
-
-    lily_raiser *raiser = lily_new_raiser();
-
-    parser->data_string_pos = 0;
     parser->current_class = NULL;
-    parser->raiser = raiser;
-    parser->msgbuf = lily_new_msgbuf(64);
-    parser->expr = lily_new_expr_state();
-    parser->generics = lily_new_generic_pool();
-    parser->symtab = lily_new_symtab();
-    parser->vm = lily_new_vm_state(raiser);
-    parser->rs = lily_malloc(sizeof(*parser->rs));
-    parser->rs->pending = 0;
-    parser->ims = lily_malloc(sizeof(*parser->ims));
-    parser->ims->path_msgbuf = lily_new_msgbuf(64);
+    parser->data_string_pos = 0;
     parser->doc = NULL;
     parser->flags = 0;
     parser->modifiers = 0;
+    parser->module_start = NULL;
+    parser->module_top = NULL;
 
+    /* These two are used for handling keyword arguments and paths that have
+       been tried. The strings are stored next to each other in the pile, with
+       the stack storing starting indexes. */
+    parser->data_stack = lily_new_buffer_u16(4);
+    parser->data_strings = lily_new_string_pile();
+
+    /* Parser's msgbuf is used to build strings for import and errors. This is
+       not shared anywhere. */
+    parser->msgbuf = lily_new_msgbuf(64);
+
+    /* These two hold import data and rewind state. */
+    parser->ims = lily_malloc(sizeof(*parser->ims));
+    parser->ims->path_msgbuf = lily_new_msgbuf(64);
+    parser->rs = lily_malloc(sizeof(*parser->rs));
+    parser->rs->pending = 0;
+
+    /* These two are simple and don't depend on other parts. */
+    parser->expr = lily_new_expr_state();
+    parser->generics = lily_new_generic_pool();
+
+    /* The raiser is used by the remaining parts to launch errors. The parser
+       shares this raiser with the first vm. Coroutine vms will get their own
+       raiser which stops at their origin point. */
+    parser->raiser = lily_new_raiser();
+
+    /* The global state (gs) maps from any vm (origin or Coroutine) back to the
+       parser. It's for api functions. */
+    parser->vm = lily_new_vm_state(parser->raiser);
     parser->vm->gs->parser = parser;
     parser->vm->gs->gc_multiplier = config->gc_multiplier;
     parser->vm->gs->gc_threshold = config->gc_start;
 
-    /* This needs a name to build the [builtin] path from that later traceback
-       will use. Registered module search starts after builtin, so nothing
-       should see the name to load this module. */
-    lily_module_register(parser->vm, "builtin", lily_builtin_info_table,
-            lily_builtin_call_table);
-    lily_set_builtin(parser->symtab, parser->module_top);
-    lily_init_pkg_builtin(parser->symtab);
+    /* Make the prelude module that holds predefined symbols. */
+    lily_module_register(parser->vm, "prelude", lily_prelude_info_table,
+            lily_prelude_call_table);
 
-    parser->emit = lily_new_emit_state(parser->symtab, raiser);
-    parser->lex = lily_new_lex_state(raiser);
-    parser->data_stack = lily_new_buffer_u16(4);
+    /* Make the symtab and load it. */
+    parser->symtab = lily_new_symtab();
+    lily_set_prelude(parser->symtab, parser->module_top);
+    lily_init_pkg_prelude(parser->symtab);
 
-    /* Here's the awful part where parser digs in and links everything that different
-       sections need. */
+    parser->lex = lily_new_lex_state(parser->raiser);
+
+    /* Emitter is launched last since it shares the most with parser. */
+    parser->emit = lily_new_emit_state(parser->symtab, parser->raiser);
     parser->tm = parser->emit->tm;
+    parser->expr_strings = parser->emit->expr_strings;
 
-    parser->expr->lex_linenum = &parser->lex->line_num;
-
-    parser->emit->lex_linenum = &parser->lex->line_num;
-    parser->emit->symtab = parser->symtab;
+    /* Emitter's parser is used for dynaloads and lambda parsing. */
     parser->emit->parser = parser;
 
-    parser->expr_strings = parser->emit->expr_strings;
-    parser->data_strings = lily_new_string_pile();
+    /* These need the line number frequently, so have them store it. */
+    parser->expr->lex_linenum = &parser->lex->line_num;
+    parser->emit->lex_linenum = &parser->lex->line_num;
 
+    /* Build the module that will hold `__main__`. */
     lily_module_entry *main_module = new_module(parser);
 
     parser->main_module = main_module;
     parser->symtab->active_module = parser->main_module;
 
-    /* This creates the var representing __main__ and registers it in areas that
-       need it. */
+    /* Create the `__main__` var and underlying function. */
     create_main_func(parser);
+
+    /* Make prelude modules available. */
     lily_prelude_register(parser->vm);
-    mark_builtin_modules(parser);
+
+    /* Mark prelude modules as being part of the prelude, so they're available
+       everywhere. */
+    mark_prelude_modules(parser);
 
     return parser->vm;
 }
@@ -242,10 +260,10 @@ static void free_docs(lily_doc_stack *d)
     uint16_t i;
 
     for (i = 0;i < d->pos;i++) {
-        char **d = data[i];
+        char **c = data[i];
 
-        lily_free(d[0]);
-        lily_free(d);
+        lily_free(c[0]);
+        lily_free(c);
     }
 
     lily_free(d->data);
@@ -269,26 +287,21 @@ void lily_free_state(lily_state *vm)
 {
     lily_parse_state *parser = vm->gs->parser;
 
-    /* The code for the toplevel function (really __main__) is a pointer to
-       emitter's code that gets refreshed before every vm entry. Set it to NULL
-       so that these teardown functions don't double free the code. */
+    /* This function's code is a pointer to emitter's code. NULL this to prevent
+       a double free. */
     parser->toplevel_func->proto->code = NULL;
 
-    lily_free_raiser(parser->raiser);
-
-    lily_free_expr_state(parser->expr);
-
-    lily_free_vm(parser->vm);
-
-    lily_free_lex_state(parser->lex);
-
-    lily_free_emit_state(parser->emit);
-
-    lily_free_buffer_u16(parser->data_stack);
-
-    /* The path for the first module is always a shallow copy of the loadname
-       that was sent. Make sure that doesn't get free'd. */
+    /* The first module's path is a shallow copy, so NULL it too. */
     parser->main_module->path = NULL;
+
+    /* Each of these deletes different parts, so order does not matter here. */
+    lily_free_emit_state(parser->emit);
+    lily_free_expr_state(parser->expr);
+    lily_free_generic_pool(parser->generics);
+    lily_free_lex_state(parser->lex);
+    lily_free_raiser(parser->raiser);
+    lily_free_symtab(parser->symtab);
+    lily_free_vm(parser->vm);
 
     lily_module_entry *module_iter = parser->module_start;
     lily_module_entry *module_next = NULL;
@@ -311,15 +324,13 @@ void lily_free_state(lily_state *vm)
         module_iter = module_next;
     }
 
-    lily_free_string_pile(parser->data_strings);
-    lily_free_symtab(parser->symtab);
-    lily_free_generic_pool(parser->generics);
-    lily_free_msgbuf(parser->msgbuf);
+    lily_free_buffer_u16(parser->data_stack);
     lily_free_msgbuf(parser->ims->path_msgbuf);
+    lily_free_msgbuf(parser->msgbuf);
     lily_free(parser->ims);
     lily_free(parser->rs);
+    lily_free_string_pile(parser->data_strings);
     free_docs(parser->doc);
-
     lily_free(parser);
 }
 
@@ -382,7 +393,7 @@ static void initialize_rewind(lily_parse_state *parser)
     rs->line_num = parser->lex->line_num;
 }
 
-static void mark_builtin_modules(lily_parse_state *parser)
+static void mark_prelude_modules(lily_parse_state *parser)
 {
     lily_module_entry *module_iter = parser->module_start;
     while (module_iter) {
@@ -432,15 +443,15 @@ lily_class *find_or_dl_class(lily_parse_state *parser, lily_module_entry *m,
     lily_class *result = NULL;
 
     if (m == symtab->active_module) {
-        lily_module_entry *builtin = symtab->builtin_module;
+        lily_module_entry *prelude = symtab->prelude_module;
 
-        result = lily_find_class(builtin, name);
+        result = lily_find_class(prelude, name);
 
         if (result == NULL && name[1] == '\0')
             result = lily_gp_find(parser->generics, name);
 
         if (result == NULL)
-            result = find_run_class_dynaload(parser, builtin, name);
+            result = find_run_class_dynaload(parser, prelude, name);
     }
 
     if (result == NULL)
@@ -482,7 +493,7 @@ lily_sym *find_existing_sym(lily_module_entry *m, const char *name)
     symbol source (like sys), a dynamically-loaded library, a string source, or
     a file.
 
-    The builtin module is the foundation of Lily, and the only module that is
+    The prelude module is the foundation of Lily, and the only module that is
     implicitly loaded. All other modules must be explicitly loaded through the
     import keyword. This is intentional. An important part of Lily is being able
     to know where symbols come from. The same reasoning is why `import *` is not
@@ -556,7 +567,7 @@ static lily_module_entry *new_module(lily_parse_state *parser)
     module->loadname = NULL;
     module->dirname = NULL;
     module->path = NULL;
-    module->doc_id = (uint16_t)-1;
+    module->doc_id = UINT16_MAX;
     module->cmp_len = 0;
     module->info_table = NULL;
     module->cid_table = NULL;
@@ -621,7 +632,7 @@ static void add_path_to_module(lily_module_entry *module,
 
     path = simplified_path(path);
 
-    module->cmp_len = strlen(path);
+    module->cmp_len = (uint16_t)strlen(path);
     module->path = lily_malloc((strlen(path) + 1) * sizeof(*module->path));
     strcpy(module->path, path);
 }
@@ -636,7 +647,7 @@ static char *dir_from_path(const char *path)
         out[0] = '\0';
     }
     else {
-        int bare_len = slash - path;
+        size_t bare_len = slash - path;
         out = lily_malloc((bare_len + 1) * sizeof(*out));
 
         strncpy(out, path, bare_len);
@@ -708,7 +719,7 @@ static void add_fixslash_dir(lily_msgbuf *msgbuf, const char *input_str)
     /* Platforms which already use '/' can simply add the string. */
     lily_mb_add(msgbuf, input_str);
 #endif
-    int len = strlen(input_str);
+    size_t len = strlen(input_str);
 
     if (input_str[len] != LILY_PATH_CHAR)
         lily_mb_add_char(msgbuf, LILY_PATH_CHAR);
@@ -1055,7 +1066,7 @@ static void make_new_function(lily_parse_state *parser, const char *class_name,
     v->flags = V_FUNCTION_FLAG | V_FUNCTION_BASE;
     v->value.function = f;
 
-    lily_vs_push(parser->symtab->literals, v);
+    lily_new_function_literal(parser->symtab, var, v);
 }
 
 /* This takes pairs from parser's data stack and builds a string array. Unlike a
@@ -1075,7 +1086,7 @@ static char **build_strings_by_data(lily_parse_state *parser,
     uint16_t no_first_key = !!lily_u16_get(ds, key_start);
     uint16_t offset = lily_u16_get(ds, key_start + 1);
     uint16_t range = parser->data_string_pos - offset;
-    char **keywords = lily_malloc((arg_count + 1) * sizeof(*keywords));
+    char **keys = lily_malloc((arg_count + 1) * sizeof(*keys));
 
     /* There's no extra +1 because range includes the terminating zero. */
     char *block = lily_malloc((range + no_first_key) * sizeof(*block));
@@ -1092,10 +1103,10 @@ static char **build_strings_by_data(lily_parse_state *parser,
     uint16_t i;
 
     for (i = 1;i < arg_count;i++)
-        keywords[i] = empty;
+        keys[i] = empty;
 
-    keywords[0] = block;
-    keywords[arg_count] = NULL;
+    keys[0] = block;
+    keys[arg_count] = NULL;
 
     for (i = key_start;i < key_end;i += 2) {
         uint16_t arg_pos = lily_u16_get(ds, i);
@@ -1104,27 +1115,27 @@ static char **build_strings_by_data(lily_parse_state *parser,
         /* Translate data string position to block position. */
         uint16_t target_pos = string_pos - offset + no_first_key;
 
-        keywords[arg_pos] = block + target_pos;
+        keys[arg_pos] = block + target_pos;
     }
 
     parser->data_string_pos = lily_u16_get(ds, key_start + 1);
     lily_u16_set_pos(ds, key_start);
-    return keywords;
+    return keys;
 }
 
 static void put_keywords_in_target(lily_parse_state *parser, lily_item *target,
-        char **keywords)
+        char **keys)
 {
     if (target->item_kind == ITEM_VAR) {
         lily_var *var = (lily_var *)target;
         lily_proto *p = lily_emit_proto_for_var(parser->emit, var);
 
-        p->keywords = keywords;
+        p->keywords = keys;
     }
     else {
         lily_variant_class *c = (lily_variant_class *)target;
 
-        c->keywords = keywords;
+        c->keywords = keys;
     }
 }
 
@@ -1187,8 +1198,8 @@ static lily_var *new_var(lily_type *type, const char *name, uint16_t line_num)
     strcpy(var->name, name);
     var->line_num = line_num;
     var->shorthash = shorthash_for_name(name);
-    var->closure_spot = (uint16_t)-1;
-    var->doc_id = (uint16_t)-1;
+    var->closure_spot = UINT16_MAX;
+    var->doc_id = UINT16_MAX;
     var->type = type;
     var->next = NULL;
     var->parent = NULL;
@@ -1247,7 +1258,7 @@ static lily_var *new_define_var(lily_parse_state *parser, const char *name,
     lily_var *var = new_var(NULL, name, line_num);
     lily_module_entry *m = parser->symtab->active_module;
 
-    var->reg_spot = lily_vs_pos(parser->symtab->literals);
+    /* Symtab sets reg_spot when the function is made. */
     var->function_depth = 1;
     var->flags = VAR_IS_READONLY;
     var->next = m->var_chain;
@@ -1266,7 +1277,7 @@ static lily_var *new_method_var(lily_parse_state *parser, lily_class *parent,
 {
     lily_var *var = new_var(NULL, name, line_num);
 
-    var->reg_spot = lily_vs_pos(parser->symtab->literals);
+    /* Symtab sets reg_spot when the function is made. */
     var->function_depth = 1;
     var->flags = VAR_IS_READONLY | modifiers;
     var->parent = parent;
@@ -1326,7 +1337,7 @@ static void create_main_func(lily_parse_state *parser)
     lex->line_num = 1;
 
     lily_var *main_var = new_define_var(parser, "__main__", lex->line_num);
-    lily_value *v = lily_vs_nth(parser->symtab->literals, 0);
+    lily_value *v = lily_literal_at(parser->symtab, 0);
     lily_function_val *f = v->value.function;
 
     lex->line_num = save_line;
@@ -1513,7 +1524,7 @@ static lily_type *get_class_arg(lily_parse_state *parser, int *flags)
     lily_lex_state *lex = parser->lex;
     lily_prop_entry *prop = NULL;
     lily_var *var;
-    int modifiers = 0;
+    uint16_t modifiers = 0;
 
     NEED_CURRENT_TOK(tk_word)
 
@@ -1651,8 +1662,9 @@ static lily_type *get_type_raw(lily_parse_state *parser, int flags)
 
         NEED_CURRENT_TOK(tk_right_parenth)
 
-        result = lily_tm_make_call(parser->tm, arg_flags & F_NO_COLLECT, cls,
-                i + 1);
+        uint16_t call_flags = (uint16_t)(arg_flags & F_NO_COLLECT);
+
+        result = lily_tm_make_call(parser->tm, call_flags, cls, i + 1);
     }
 
     lily_next_token(lex);
@@ -1676,7 +1688,7 @@ static void collect_generics_for(lily_parse_state *parser, lily_class *cls)
         return;
 
     lily_type_maker *tm = parser->tm;
-    char ch = 'A' + lily_gp_num_in_scope(parser->generics);
+    char ch = 'A' + (char)lily_gp_num_in_scope(parser->generics);
     char name[] = {ch, '\0'};
 
     while (1) {
@@ -1757,13 +1769,29 @@ static void error_forward_decl_type(lily_parse_state *parser, lily_var *var,
             "Received: ^T", var->line_num, var->type, got);
 }
 
+static void check_duplicate_keyarg(lily_parse_state *parser, uint16_t pos)
+{
+    lily_buffer_u16 *ds = parser->data_stack;
+    uint16_t stop = lily_u16_pos(ds);
+    char *name = parser->lex->label;
+
+    for (;pos != stop;pos += 2) {
+        uint16_t key_pos = lily_u16_get(ds, pos + 1);
+        char *keyarg = lily_sp_get(parser->data_strings, key_pos);
+
+        if (strcmp(keyarg, name) == 0)
+            lily_raise_syn(parser->raiser,
+                    "A keyword named :%s has already been declared.", name);
+    }
+}
+
 static void collect_call_args(lily_parse_state *parser, void *target,
         int arg_flags)
 {
     lily_lex_state *lex = parser->lex;
     /* -1 because Unit is injected at the front beforehand. */
-    int result_pos = parser->tm->pos - 1;
-    int i = 0;
+    uint16_t result_pos = parser->tm->pos - 1;
+    uint16_t i = 0;
     uint16_t keyarg_start = lily_u16_pos(parser->data_stack);
     collect_fn arg_collect = NULL;
 
@@ -1799,6 +1827,7 @@ static void collect_call_args(lily_parse_state *parser, void *target,
 
         while (1) {
             if (lex->token == tk_keyword_arg) {
+                check_duplicate_keyarg(parser, keyarg_start);
                 lily_u16_write_1(parser->data_stack, i);
                 add_data_string(parser, lex->label);
                 lily_next_token(lex);
@@ -1863,9 +1892,9 @@ static void collect_call_args(lily_parse_state *parser, void *target,
                     "Forward declarations not allowed to have keyword arguments.");
         }
 
-        char **keywords = build_strings_by_data(parser, i, keyarg_start);
+        char **keys = build_strings_by_data(parser, i, keyarg_start);
 
-        put_keywords_in_target(parser, target, keywords);
+        put_keywords_in_target(parser, target, keys);
     }
 
     lily_type *t = lily_tm_make_call(parser->tm, arg_flags & F_NO_COLLECT,
@@ -1925,7 +1954,7 @@ static void collect_call_args(lily_parse_state *parser, void *target,
     implement scoping: Flat enums point to their variants while scoped enums
     point past them. The info table is always terminated with a "Z" record.
 
-    When a module is first loaded (except for builtin), no symbols are loaded.
+    When a module is first loaded (except for prelude), no symbols are loaded.
     Instead, the interpreter waits until a symbol is explicitly specified. When
     that happens, a lookup is done and this mechanism is used as a fallback.
 
@@ -1934,7 +1963,7 @@ static void collect_call_args(lily_parse_state *parser, void *target,
     requested.
 
     This mechanism was written with predefined modules in mind, notably the
-    builtin module. At well over 100 records, this makes a considerable
+    prelude module. At well over 100 records, this makes a considerable
     difference in startup memory cost. */
 
 static void parse_variant_header(lily_parse_state *, lily_variant_class *);
@@ -1957,11 +1986,11 @@ static void update_cid_table(lily_parse_state *parser, lily_module_entry *m)
     int counter = 0;
     int stop = cid_entry[-1];
     uint16_t *cid_table = m->cid_table;
-    lily_module_entry *builtin = parser->module_start;
+    lily_module_entry *prelude = parser->module_start;
 
     while (counter < stop) {
         if (cid_table[counter] == 0) {
-            lily_class *cls = lily_find_class(builtin, cid_entry);
+            lily_class *cls = lily_find_class(prelude, cid_entry);
 
             if (cls == NULL)
                 cls = lily_find_class(m, cid_entry);
@@ -2172,16 +2201,15 @@ static void dyna_restore(lily_parse_state *parser, lily_dyna_state *ds)
 
 static void dynaload_foreign(lily_parse_state *parser, lily_dyna_state *ds)
 {
-    lily_module_entry *save_active = parser->symtab->active_module;
-
-    parser->symtab->active_module = ds->m;
+    dyna_save(parser, ds);
 
     lily_class *cls = lily_new_class(parser->symtab, dyna_get_name(ds), 0);
 
     cls->item_kind = ITEM_CLASS_FOREIGN;
     cls->dyna_start = ds->index;
+    collect_generics_for(parser, cls);
+    dyna_restore(parser, ds);
     ds->result = (lily_item *)cls;
-    parser->symtab->active_module = save_active;
 }
 
 static void dynaload_var(lily_parse_state *parser, lily_dyna_state *ds)
@@ -2322,6 +2350,7 @@ static void dynaload_native(lily_parse_state *parser, lily_dyna_state *ds)
     uint16_t source_mods[] = {SYM_SCOPE_PRIVATE, SYM_SCOPE_PROTECTED,
             SYM_SCOPE_PUBLIC};
 
+
     cls->dyna_start = ds->index;
     collect_generics_for(parser, cls);
 
@@ -2385,7 +2414,7 @@ static void dynaload_function(lily_parse_state *parser, lily_dyna_state *ds)
     lily_tm_add(parser->tm, lily_unit_type);
     collect_call_args(parser, var, F_COLLECT_DYNALOAD);
 
-    lily_value *v = lily_vs_nth(parser->symtab->literals, var->reg_spot);
+    lily_value *v = lily_literal_at(parser->symtab, var->reg_spot);
     lily_function_val *f = v->value.function;
 
     f->foreign_func = m->call_table[ds->index];
@@ -2489,7 +2518,7 @@ static int keyword_by_name(const char *name)
             break;
     }
 
-    return -1;
+    return KEY_BAD_ID;
 }
 
 /***
@@ -2548,7 +2577,7 @@ static int constant_by_name(const char *name)
             break;
     }
 
-    return -1;
+    return CONST_BAD_ID;
 }
 
 static void error_self_usage(lily_parse_state *parser)
@@ -2624,30 +2653,30 @@ static int maybe_digit_fixup(lily_parse_state *parser)
 static int expr_word_try_constant(lily_parse_state *parser)
 {
     lily_lex_state *lex = parser->lex;
-    int key_id = constant_by_name(lex->label);
+    int const_id = constant_by_name(lex->label);
 
-    if (key_id == -1)
+    if (const_id == CONST_BAD_ID)
         return 0;
 
     /* These literal fetching routines are guaranteed to return a literal with
        the given value. */
-    if (key_id == CONST___LINE__)
+    if (const_id == CONST___LINE__)
         push_integer(parser, (int64_t)lex->line_num);
-    else if (key_id == CONST___FILE__)
+    else if (const_id == CONST___FILE__)
         push_string(parser, parser->symtab->active_module->path);
-    else if (key_id == CONST___FUNCTION__)
+    else if (const_id == CONST___FUNCTION__)
         push_string(parser, parser->emit->scope_block->scope_var->name);
-    else if (key_id == CONST_TRUE)
+    else if (const_id == CONST_TRUE)
         lily_es_push_boolean(parser->expr, 1);
-    else if (key_id == CONST_FALSE)
+    else if (const_id == CONST_FALSE)
         lily_es_push_boolean(parser->expr, 0);
-    else if (key_id == CONST_SELF) {
+    else if (const_id == CONST_SELF) {
         if (lily_emit_can_use_self_keyword(parser->emit) == 0)
             error_self_usage(parser);
 
         lily_es_push_self(parser->expr);
     }
-    else if (key_id == CONST_UNIT)
+    else if (const_id == CONST_UNIT)
         push_unit(parser);
 
     return 1;
@@ -2757,8 +2786,7 @@ static void expr_word_as_class(lily_parse_state *parser, lily_class *cls,
 /* This function takes a var and determines what kind of tree to put it into.
    The tree type is used by emitter to group vars into different types as a
    small optimization. */
-static void expr_word_as_var(lily_parse_state *parser, lily_var *var,
-        uint16_t *state)
+static void expr_word_as_var(lily_parse_state *parser, lily_var *var)
 {
     if (var->flags & SYM_NOT_INITIALIZED)
         lily_raise_syn(parser->raiser,
@@ -2807,15 +2835,14 @@ static void expr_word(lily_parse_state *parser, uint16_t *state)
              expr_word_try_use_self(parser))
         return;
     else {
-        /* Since no module was explicitly provided, look through the builtins.
-           This intentionally sets 'm' so that the dynaload check targets the
-           builtin module. */
-        m = symtab->builtin_module;
+        /* Since no module was explicitly provided, look through predefined
+           symbols. */
+        m = symtab->prelude_module;
         sym = find_existing_sym(m, name);
     }
 
     /* As a last resort, try running a dynaload. This will check either the
-       module explicitly provided, or the builtin module.
+       module explicitly provided, or the prelude module.
        In most other situations, the active module should be checked as well
        since it could be a foreign module. Since expressions are limited to
        native modules, it is impossible for the active module to have a dynaload
@@ -2825,7 +2852,7 @@ static void expr_word(lily_parse_state *parser, uint16_t *state)
 
     if (sym) {
         if (sym->item_kind == ITEM_VAR)
-            expr_word_as_var(parser, (lily_var *)sym, state);
+            expr_word_as_var(parser, (lily_var *)sym);
         else if (sym->item_kind & ITEM_IS_VARIANT)
 	        lily_es_push_variant(parser->expr, (lily_variant_class *)sym);
         else
@@ -3066,6 +3093,7 @@ static void expr_integer(lily_parse_state *parser, uint16_t *state)
 
 static void expr_invalid(lily_parse_state *parser, uint16_t *state)
 {
+    (void)parser;
     *state = ST_BAD_TOKEN;
 }
 
@@ -3297,12 +3325,12 @@ static lily_type *parse_lambda_body(lily_parse_state *parser,
                 tokname(tk_end_lambda));
 
     while (1) {
-        int key_id = -1;
+        int key_id = KEY_BAD_ID;
 
         if (lex->token == tk_word)
             key_id = keyword_by_name(lex->label);
 
-        if (key_id != -1) {
+        if (key_id != KEY_BAD_ID) {
             lily_next_token(lex);
             handlers[key_id](parser);
         }
@@ -3389,18 +3417,18 @@ static int collect_lambda_args(lily_parse_state *parser,
    tree eval. As such, the current state has to be saved and a lambda has to be
    made too. When this is done, it has to build the resulting type of the lambda
    as well. */
-lily_var *lily_parser_lambda_eval(lily_parse_state *parser,
-        int lambda_start_line, const char *lambda_body, lily_type *expect_type)
+lily_var *lily_parser_lambda_eval(lily_parse_state *parser, uint16_t start_line,
+        const char *lambda_body, lily_type *expect_type)
 {
     lily_lex_state *lex = parser->lex;
     int args_collected = 0, tm_return = parser->tm->pos;
     lily_type *root_result;
 
     lily_lexer_load(lex, et_lambda, lambda_body);
-    lex->line_num = lambda_start_line;
+    lex->line_num = start_line;
 
     lily_var *lambda_var = new_define_var(parser, "(lambda)",
-            lambda_start_line);
+            start_line);
 
     lily_emit_enter_lambda_block(parser->emit, lambda_var);
 
@@ -4266,7 +4294,7 @@ static void ensure_valid_class(lily_parse_state *parser, const char *name)
         else if (item->item_kind & ITEM_IS_VARIANT)
             cls = ((lily_variant_class *)item)->parent;
 
-        if (cls->module == parser->symtab->builtin_module) {
+        if (cls->module == parser->symtab->prelude_module) {
             prefix = "A built-in";
             suffix = "already exists.";
         }
@@ -4304,7 +4332,7 @@ static void parse_super(lily_parse_state *parser, lily_class *cls)
         lily_raise_syn(parser->raiser, "'%s' cannot be inherited from.",
                 lex->label);
 
-    int adjust = super_class->prop_count;
+    uint16_t adjust = super_class->prop_count;
 
     /* Lineage must be fixed before running the inherited constructor, as the
        constructor may use 'self'. */
@@ -4396,12 +4424,12 @@ static void parse_class_header(lily_parse_state *parser, lily_class *cls)
 
     /* Don't make 'self' available until the class is fully constructed. */
     lily_emit_create_block_self(parser->emit, cls->self_type);
-    lily_emit_write_class_init(parser->emit, cls, lex->line_num);
+    lily_emit_write_class_init(parser->emit, lex->line_num);
     finish_define_init(parser, call_var);
 
     if (cls->members->item_kind == ITEM_PROPERTY)
         lily_emit_write_shorthand_ctor(parser->emit, cls,
-                parser->symtab->active_module->var_chain, lex->line_num);
+                parser->symtab->active_module->var_chain);
 
     if (cls->parent)
         super_expression(parser, cls);
@@ -4433,8 +4461,7 @@ static int get_gc_flags_for(lily_type *target)
 /* A user-defined class is about to close. This scans over 'target' to find out
    if any properties inside of the class may require gc information. If such
    information is needed, then the class will have the appropriate flags set. */
-static void determine_class_gc_flag(lily_parse_state *parser,
-        lily_class *target)
+static void determine_class_gc_flag(lily_class *target)
 {
     lily_class *parent_iter = target->parent;
     int mark = 0;
@@ -4639,21 +4666,22 @@ static void error_incomplete_match(lily_parse_state *parser)
 
     lily_msgbuf *msgbuf = parser->raiser->aux_msgbuf;
     lily_named_sym *sym_iter = match_class->members;
-    int match_case_start = block->match_case_start;
-    int *match_cases = parser->emit->match_cases + match_case_start;
-    int i;
+    lily_buffer_u16 *match_cases = parser->emit->match_cases;
+    uint16_t case_start = parser->emit->block->match_case_start;
+    uint16_t case_end = lily_u16_pos(parser->emit->match_cases);
+    uint16_t i;
 
     lily_mb_add(msgbuf,
             "Match pattern not exhaustive. The following case(s) are missing:");
 
     while (sym_iter) {
         if (sym_iter->item_kind & ITEM_IS_VARIANT) {
-            for (i = match_case_start;i < parser->emit->match_case_pos;i++) {
-                if (sym_iter->id == match_cases[i])
+            for (i = case_start;i < case_end;i++) {
+                if (sym_iter->id == lily_u16_get(match_cases, i))
                     break;
             }
 
-            if (i == parser->emit->match_case_pos)
+            if (i == case_end)
                 lily_mb_add_fmt(msgbuf, "\n* %s", sym_iter->name);
         }
 
@@ -4843,7 +4871,7 @@ static void verify_resolve_define_var(lily_parse_state *parser,
 #undef ALL_MODIFIERS
 
 static lily_var *parse_new_define(lily_parse_state *parser, lily_class *parent,
-        int modifiers)
+        uint16_t modifiers)
 {
     lily_lex_state *lex = parser->lex;
     const char *name = lex->label;
@@ -4942,7 +4970,7 @@ static void verify_static_modifier(lily_parse_state *parser)
 static void parse_modifier(lily_parse_state *parser, int key)
 {
     lily_lex_state *lex = parser->lex;
-    int modifiers = 0;
+    uint16_t modifiers = 0;
 
     if (key == KEY_FORWARD) {
         lily_block_type block_type = parser->emit->block->block_type;
@@ -5054,12 +5082,12 @@ static void keyword_protected(lily_parse_state *parser)
 static void maybe_fix_print(lily_parse_state *parser)
 {
     lily_symtab *symtab = parser->symtab;
-    lily_module_entry *builtin = symtab->builtin_module;
-    lily_var *stdout_var = lily_find_var(builtin, "stdout");
+    lily_module_entry *prelude = symtab->prelude_module;
+    lily_var *stdout_var = lily_find_var(prelude, "stdout");
     lily_vm_state *vm = parser->vm;
 
     if (stdout_var) {
-        lily_var *print_var = lily_find_var(builtin, "print");
+        lily_var *print_var = lily_find_var(prelude, "print");
         if (print_var) {
             /* Swap out the default implementation of print for one that will
                check if stdin is closed first. */
@@ -5077,14 +5105,12 @@ static void template_read_loop(lily_parse_state *parser, lily_lex_state *lex)
     lily_config *config = parser->config;
     int has_more = 0;
 
-    while (1) {
+    do {
         char *buffer = lily_read_template_content(lex, &has_more);
 
-        if (has_more == 0)
-            break;
-
-        config->render_func(buffer, config->data);
-    }
+        if (*buffer)
+            config->render_func(buffer, config->data);
+    } while (has_more);
 }
 
 static void main_func_setup(lily_parse_state *parser)
@@ -5138,7 +5164,7 @@ static void parse_block_exit(lily_parse_state *parser)
             if (block->forward_count)
                 error_forward_decl_pending(parser);
 
-            determine_class_gc_flag(parser, parser->current_class);
+            determine_class_gc_flag(parser->current_class);
             parser->current_class = NULL;
             lily_gp_restore(parser->generics, 0);
             lily_emit_leave_class_block(emit, lex->line_num);
@@ -5181,10 +5207,11 @@ static void process_docblock(lily_parse_state *parser)
     lily_next_token(lex);
 
     int key_id;
+
     if (lex->token == tk_word)
         key_id = keyword_by_name(lex->label);
     else
-        key_id = -1;
+        key_id = KEY_BAD_ID;
 
     if (key_id == KEY_PRIVATE ||
         key_id == KEY_PROTECTED ||
@@ -5207,7 +5234,7 @@ static void process_docblock(lily_parse_state *parser)
 static void parser_loop(lily_parse_state *parser)
 {
     lily_lex_state *lex = parser->lex;
-    int key_id = -1;
+    int key_id = KEY_BAD_ID;
 
     lily_next_token(lex);
 
@@ -5215,7 +5242,7 @@ static void parser_loop(lily_parse_state *parser)
         if (lex->token == tk_word) {
             /* Is this a keyword or an expression? */
             key_id = keyword_by_name(lex->label);
-            if (key_id != -1) {
+            if (key_id != KEY_BAD_ID) {
                 /* Pull the next token and dispatch the keyword. */
                 lily_next_token(lex);
                 handlers[key_id](parser);
@@ -5344,6 +5371,7 @@ static void set_manifest_define_doc(lily_parse_state *parser)
     for (i = count;i > offset;i--) {
         lily_u16_write_1(parser->data_stack, i);
         add_data_string(parser, var_iter->name);
+        var_iter = var_iter->next;
     }
 
     if (offset) {
@@ -5529,16 +5557,16 @@ static void manifest_modifier(lily_parse_state *parser, int key)
     parser->modifiers = 0;
 }
 
-static void manifest_override_builtin(lily_parse_state *parser)
+static void manifest_override_prelude(lily_parse_state *parser)
 {
     lily_symtab *symtab = parser->symtab;
-    lily_module_entry *builtin = symtab->builtin_module;
+    lily_module_entry *prelude = symtab->prelude_module;
     lily_block *scope_block = parser->emit->scope_block;
 
-    parser->symtab->active_module = builtin;
-    scope_block->scope_var->module = builtin;
+    parser->symtab->active_module = prelude;
+    scope_block->scope_var->module = prelude;
 
-    lily_var *var_iter = builtin->var_chain;
+    lily_var *var_iter = prelude->var_chain;
     uint16_t count = 0;
 
     while (var_iter) {
@@ -5562,7 +5590,7 @@ static void manifest_library(lily_parse_state *parser)
 
     lily_var *scope_var = scope_block->scope_var;
 
-    if (scope_var->doc_id != (uint16_t)-1)
+    if (scope_var->doc_id != UINT16_MAX)
         lily_raise_syn(parser->raiser,
                 "Library keyword has already been used.");
 
@@ -5575,9 +5603,9 @@ static void manifest_library(lily_parse_state *parser)
        right name for tooling. */
     NEED_NEXT_TOK(tk_word)
 
-    if (strcmp(lex->label, "builtin") == 0) {
-        manifest_override_builtin(parser);
-        m = parser->symtab->builtin_module;
+    if (strcmp(lex->label, "prelude") == 0) {
+        manifest_override_prelude(parser);
+        m = parser->symtab->prelude_module;
     }
 
     m->doc_id = build_doc_data(parser, 1);
@@ -5623,19 +5651,19 @@ static void manifest_predefined(lily_parse_state *parser)
 {
     lily_lex_state *lex = parser->lex;
     lily_symtab *symtab = parser->symtab;
-    lily_module_entry *builtin = symtab->builtin_module;
+    lily_module_entry *prelude = symtab->prelude_module;
 
-    /* This keyword is strictly for the builtin manifest. It allows the builtin
-       module to redefine builtin classes/enums.
+    /* This keyword is strictly for the prelude manifest. It allows the prelude
+       module to redefine prelude classes/enums.
        Unlike other keywords, this one performs limited error checking because
-       it assumes the builtin manifest is correct. */
-    if (symtab->active_module != builtin)
+       it assumes the prelude manifest is correct. */
+    if (symtab->active_module != prelude)
         lily_raise_syn(parser->raiser,
-                "'predefined' only available to the builtin module.");
+                "'predefined' only available to the prelude module.");
 
     NEED_NEXT_TOK(tk_word)
 
-    lily_class *cls = find_or_dl_class(parser, builtin, lex->label);
+    lily_class *cls = find_or_dl_class(parser, prelude, lex->label);
 
     /* Drop everything in this target. The methods have been loaded into vm
        tables already, so this won't break existing declarations. This will,
@@ -5671,7 +5699,8 @@ static void manifest_predefined(lily_parse_state *parser)
 static void manifest_loop(lily_parse_state *parser)
 {
     lily_lex_state *lex = parser->lex;
-    int have_docblock = 0, key_id = -1;
+    int have_docblock = 0;
+    int key_id = KEY_BAD_ID;
 
     parser->flags |= PARSER_IN_MANIFEST;
 
@@ -5785,7 +5814,7 @@ static void update_main_name(lily_parse_state *parser,
 
     module->path = path;
     module->dirname = dir_from_path(path);
-    module->cmp_len = strlen(path);
+    module->cmp_len = (uint16_t)strlen(path);
     module->root_dirname = module->dirname;
     /* The loadname isn't set because the first module isn't importable. */
 

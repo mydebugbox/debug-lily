@@ -1,12 +1,13 @@
 #ifndef LILY_EMITTER_H
 # define LILY_EMITTER_H
 
-# include "lily_raiser.h"
-# include "lily_symtab.h"
-# include "lily_type_system.h"
-# include "lily_type_maker.h"
 # include "lily_buffer_u16.h"
+# include "lily_expr.h"
+# include "lily_raiser.h"
 # include "lily_string_pile.h"
+# include "lily_symtab.h"
+# include "lily_type_maker.h"
+# include "lily_type_system.h"
 
 # define SCOPE_CLASS  0x020
 # define SCOPE_DEFINE 0x040
@@ -170,10 +171,9 @@ typedef struct {
        get patched to the end of the block once the end is known. */
     lily_buffer_u16 *patches;
 
-    /* Match blocks allocate space in here, initially with 0. When a match case
-       is seen, it's set to 1. This is used to make sure a case isn't seen
-       twice or not seen at all. */
-    int *match_cases;
+    /* Match blocks will add the class id / variant id of the cases they come
+       across in here to prevent duplicates. */
+    lily_buffer_u16 *match_cases;
 
     /* All code is written initially to here. When a function is done, a block
        of the appropriate size is copied from here into the function value. */
@@ -187,12 +187,6 @@ typedef struct {
     uint16_t *transform_table;
 
     uint64_t transform_size;
-
-    uint16_t match_case_pos;
-
-    uint16_t match_case_size;
-
-    uint32_t pad;
 
     struct lily_storage_stack_ *storages;
 
@@ -287,11 +281,11 @@ int lily_emit_can_use_self_keyword(lily_emit_state *);
 int lily_emit_can_use_self_method(lily_emit_state *);
 int lily_emit_can_use_self_property(lily_emit_state *);
 
-void lily_emit_write_class_init(lily_emit_state *, lily_class *, uint16_t);
+void lily_emit_write_class_init(lily_emit_state *, uint16_t);
 void lily_emit_write_for_header(lily_emit_state *, lily_var *, lily_var *,
         lily_var *, lily_var *, uint16_t);
-void lily_emit_write_shorthand_ctor(lily_emit_state *, lily_class *, lily_var *,
-        uint16_t);
+void lily_emit_write_shorthand_ctor(lily_emit_state *, lily_class *,
+        lily_var *);
 
 lily_type *lily_emit_type_for_variant(lily_emit_state *, lily_variant_class *);
 void lily_emit_write_variant_case(lily_emit_state *, lily_var *, uint16_t);

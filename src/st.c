@@ -5,12 +5,9 @@
 #include <string.h>
 
 #include "lily.h"
-
-#include "lily_core_types.h"
-#include "lily_value_structs.h"
 #include "lily_alloc.h"
-#include "lily_value_flags.h"
-#include "lily_value_raw.h"
+#include "lily_core_types.h"
+#include "lily_value.h"
 
 extern uint64_t siphash24(const void *, unsigned long, const char [16]);
 
@@ -98,9 +95,9 @@ if (PTR_NOT_EQUAL(table, ptr, hash_val, key)) {\
         cmp_fn = cmp_str; \
     } \
 
-static int new_size(int size)
+static unsigned int new_size(unsigned int size)
 {
-    int i, newsize;
+    unsigned int i, newsize;
     /* Only returned if there are no more primes. You'll probably hit memory
        limits before that happens. */
     int out = -1;

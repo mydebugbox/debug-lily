@@ -26,7 +26,8 @@
 # website documentation is located in a different repository.
 
 var targets = [
-    "builtin",
+    "prelude",
+    "coroutine",
     "introspect",
     "math",
     "random",

@@ -21,10 +21,6 @@ typedef struct lily_bytestring_val_ lily_bytestring_val;
 // Holds a variant, user-defined class, List, or Tuple.
 typedef struct lily_container_val_  lily_container_val;
 
-// Typedef: lily_coroutine_val
-// Holds a Coroutine value.
-typedef struct lily_coroutine_val_  lily_coroutine_val;
-
 // Typedef: lily_file_val
 // Holds a File value.
 typedef struct lily_file_val_       lily_file_val;
@@ -610,12 +606,8 @@ const char *lily_import_current_root_dir(lily_state *s);
 // Identity of the Unit class.
 #define LILY_ID_UNIT         25
 
-// Macro: LILY_ID_COROUTINE
-// Identity of the Coroutine class.
-#define LILY_ID_COROUTINE    26
-
 /* Internal use only: Where class ids start at. */
-#define START_CLASS_ID       27
+#define START_CLASS_ID       26
 
 ////////////////////////////////
 // Section: Raw value operations
@@ -628,7 +620,7 @@ char *lily_bytestring_raw(lily_bytestring_val *byte_val);
 
 // Function: lily_bytestring_length
 // Get the size (in bytes) of a ByteString.
-int lily_bytestring_length(lily_bytestring_val *byte_val);
+uint32_t lily_bytestring_length(lily_bytestring_val *byte_val);
 
 // Function: lily_con_get
 // Fetch an element from a container.
@@ -643,8 +635,8 @@ int lily_bytestring_length(lily_bytestring_val *byte_val);
 // Parameters:
 //     con   - The container (user-defined class, non-empty variant, List, or
 //             Tuple).
-//     index - Target index. Cannot be negative. 0 is the first element.
-lily_value *lily_con_get(lily_container_val *con, int index);
+//     index - Target index. 0 is the first element.
+lily_value *lily_con_get(lily_container_val *con, uint32_t index);
 
 // Function: lily_con_set
 // Set an element into a container.
@@ -658,8 +650,8 @@ lily_value *lily_con_get(lily_container_val *con, int index);
 // Parameters:
 //     con   - The container (user-defined class, non-empty variant, List, or
 //             Tuple).
-//     index - Target index. Cannot be negative. 0 is the first element.
-void lily_con_set(lily_container_val *con, int index, lily_value *value);
+//     index - Target index. 0 is the first element.
+void lily_con_set(lily_container_val *con, uint32_t index, lily_value *value);
 
 // Function: lily_con_set_from_stack
 // (Stack: -1) Set an element into a container from the stack.
@@ -672,8 +664,9 @@ void lily_con_set(lily_container_val *con, int index, lily_value *value);
 // Parameters:
 //     con   - The container (user-defined class, non-empty variant, List, or
 //             Tuple).
-//     index - Target index. Cannot be negative. 0 is the first element.
-void lily_con_set_from_stack(lily_state *s, lily_container_val *con, int index);
+//     index - Target index. 0 is the first element.
+void lily_con_set_from_stack(lily_state *s, lily_container_val *con,
+                             uint32_t index);
 
 // Function: lily_con_size
 // Return the number of occupied values in a container.
@@ -770,7 +763,7 @@ int lily_hash_take(lily_state *s, lily_hash_val *hash, lily_value *key);
 //     con   - A List value.
 //     index - Index position. Cannot be negative. 0 is the first element.
 //     value - A full value to push.
-void lily_list_insert(lily_container_val *con, int index, lily_value *value);
+void lily_list_insert(lily_container_val *con, uint32_t index, lily_value *value);
 
 // Function: lily_list_reserve
 // Reserve N elements in a List.
@@ -787,7 +780,7 @@ void lily_list_insert(lily_container_val *con, int index, lily_value *value);
 //     size - The total number of elements to have reserved. If this is less
 //            than the number of elements currently reserved, no action is
 //            taken. Must not be negative.
-void lily_list_reserve(lily_container_val *con, int size);
+void lily_list_reserve(lily_container_val *con, uint32_t size);
 
 // Function: lily_list_take
 // (Stack: +1) Take an element out of a List, pushing it onto the stack.
@@ -802,7 +795,7 @@ void lily_list_reserve(lily_container_val *con, int size);
 //     s     - The interpreter.
 //     con   - A List value.
 //     index - Target index. Cannot be negative. 0 is the first element.
-void lily_list_take(lily_state *s, lily_container_val *con, int index);
+void lily_list_take(lily_state *s, lily_container_val *con, uint32_t index);
 
 // Function: lily_list_push
 // Push a value onto the end of a List.
@@ -819,7 +812,7 @@ char *lily_string_raw(lily_string_val *string_val);
 
 // Function: lily_string_length
 // Returns the size (in bytes) of a String buffer.
-int lily_string_length(lily_string_val *string_val);
+uint32_t lily_string_length(lily_string_val *string_val);
 
 /////////////////////////////
 // Section: Argument handling
@@ -870,10 +863,6 @@ lily_bytestring_val *lily_arg_bytestring(lily_state *s, int index);
 // will almost certainly cause a crash.
 lily_container_val * lily_arg_container (lily_state *s, int index);
 
-// Function: lily_arg_coroutine
-// Fetch a Coroutine from the stack.
-lily_coroutine_val * lily_arg_coroutine (lily_state *s, int index);
-
 // Function: lily_arg_double
 // Fetch a Double from the stack.
 double               lily_arg_double    (lily_state *s, int index);
@@ -917,7 +906,7 @@ lily_value *         lily_arg_value     (lily_state *s, int index);
 // How many arguments the function being called was given.
 //
 // Note: Variable argument functions place their extra arguments into a List.
-int lily_arg_count(lily_state *s);
+uint16_t lily_arg_count(lily_state *s);
 
 // Function: lily_arg_isa
 // Check if an argument has an exact class id.
@@ -1073,7 +1062,8 @@ void                lily_push_string       (lily_state *s, const char *source);
 // The source should not include a zero terminator. This function will add one
 // at the very end. Callers should instead make sure that there are no zero
 // terminators in 'source' (at least for as much as 'size').
-void                lily_push_string_sized (lily_state *s, const char *source, int size);
+void                lily_push_string_sized (lily_state *s, const char *source,
+                                            int size);
 
 // Function: lily_push_super
 // (Stack: +1) Push a superclass onto the stack.
@@ -1106,6 +1096,16 @@ lily_container_val *lily_push_tuple        (lily_state *s, uint32_t size);
 // Function: lily_push_unit
 // (Stack: +1) Push the unit value (of class Unit) onto the stack.
 void                lily_push_unit         (lily_state *s);
+
+// Function: lily_push_unset
+// (Stack: +1) Push an unset value onto the stack.
+//
+// This is solely for calling functions that have optional keyword arguments.
+//
+// Suppose there's a function that takes two optional keyed arguments. To pass
+// only the second argument, push an unset, then push the value for the second
+// argument.
+void                lily_push_unset        (lily_state *s);
 
 // Function: lily_push_value
 // (Stack: +1) Push a full value onto the stack.
@@ -1196,7 +1196,6 @@ void lily_return_value  (lily_state *s, lily_value *value);
 // lily_isa_boolean       - The value is a 'Boolean'.
 // lily_isa_byte          - The value is a 'Byte'.
 // lily_isa_bytestring    - The value is a 'ByteString'.
-// lily_isa_coroutine     - The value is a 'Coroutine'.
 // lily_isa_double        - The value is a 'Double'.
 // lily_isa_empty_variant - This is a variant that does not have any values
 //                          inside of it. Do not attempt to use this as a
@@ -1223,7 +1222,6 @@ typedef enum {
     lily_isa_boolean,
     lily_isa_byte,
     lily_isa_bytestring,
-    lily_isa_coroutine,
     lily_isa_double,
     lily_isa_empty_variant,
     lily_isa_file,
@@ -1259,10 +1257,6 @@ lily_bytestring_val *lily_as_bytestring(lily_value *value);
 // Function: lily_as_container
 // Extract a container (user-defined class, non-empty variant, List, or Tuple).
 lily_container_val * lily_as_container (lily_value *value);
-
-// Function: lily_as_coroutine
-// Extract a Coroutine.
-lily_coroutine_val * lily_as_coroutine (lily_value *value);
 
 // Function: lily_as_double
 // Extract a Double.
@@ -1321,7 +1315,7 @@ char *               lily_as_string_raw(lily_value *value);
 // that was returned by the last call to 'lily_call_prepare'. If a caller wants
 // to save the result of a function call, it can use lily_push_value to push
 // the result onto the stack.
-void lily_call(lily_state *s, int count);
+void lily_call(lily_state *s, uint16_t count);
 
 // Function: lily_call_prepare
 // (Stack: +1) Reserve a result register and prepare 'func'.
@@ -1489,6 +1483,10 @@ void lily_mb_add_fmt(lily_msgbuf *msgbuf, const char *format, ...);
 // Function: lily_mb_add_fmt_va
 // lily_mb_add_fmt, but using a va_list.
 void lily_mb_add_fmt_va(lily_msgbuf *msgbuf, const char *format, va_list);
+
+// Function: lily_mb_add_sized
+// Add 'count' characters of 'source' to the msgbuf.
+void lily_mb_add_sized(lily_msgbuf *msgbuf, const char *source, int count);
 
 // Function: lily_mb_add_slice
 // Add 'source' to the msgbuf, from 'start' to 'end'.

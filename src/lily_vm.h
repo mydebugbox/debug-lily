@@ -2,7 +2,6 @@
 # define LILY_VM_H
 
 # include "lily.h"
-
 # include "lily_raiser.h"
 # include "lily_symtab.h"
 
@@ -77,14 +76,12 @@ typedef struct lily_global_state_ {
     uint32_t gc_live_entry_count;
     /* How many entries to allow in ->gc_live_entries before doing a sweep. */
     uint32_t gc_threshold;
-    /* An always-increasing value indicating the current pass, used to determine
-       if an entry has been seen. An entry is visible if
-       'entry->last_pass == gc_pass' */
-    uint32_t gc_pass;
 
     /* If the current gc sweep does not free anything, this is how much that
        the threshold is multiplied by to increase it. */
     uint32_t gc_multiplier;
+
+    uint32_t pad;
 
     struct lily_vm_state_ *first_vm;
 
@@ -126,9 +123,14 @@ lily_vm_state *lily_new_vm_state(lily_raiser *);
 void lily_rewind_vm(lily_vm_state *);
 void lily_free_vm(lily_vm_state *);
 
+lily_vm_state *lily_vm_coroutine_build(lily_vm_state *, uint16_t);
+void lily_vm_coroutine_call_prep(lily_vm_state *, uint16_t);
+void lily_vm_coroutine_resume(lily_vm_state *, lily_coroutine_val *,
+        lily_value *);
+
 void lily_vm_execute(lily_vm_state *);
 
-void lily_vm_ensure_class_table(lily_vm_state *, int);
+void lily_vm_ensure_class_table(lily_vm_state *, uint16_t);
 void lily_vm_add_class_unchecked(lily_vm_state *, lily_class *);
 
 #endif

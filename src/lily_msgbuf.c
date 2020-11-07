@@ -1,15 +1,14 @@
-#include <stdarg.h>
-#include <string.h>
-#include <stdio.h>
 #include <ctype.h>
 #include <inttypes.h>
+#include <stdarg.h>
+#include <stdio.h>
+#include <string.h>
 
 #include "lily.h"
-
-#include "lily_core_types.h"
-#include "lily_value_flags.h"
-#include "lily_vm.h"
 #include "lily_alloc.h"
+#include "lily_core_types.h"
+#include "lily_value.h"
+#include "lily_vm.h"
 
 extern lily_type *lily_unit_type;
 
@@ -38,7 +37,7 @@ lily_msgbuf *lily_new_msgbuf(uint32_t initial)
     return msgbuf;
 }
 
-static void resize_msgbuf(lily_msgbuf *msgbuf, int new_size)
+static void resize_msgbuf(lily_msgbuf *msgbuf, uint32_t new_size)
 {
     while (msgbuf->size < new_size)
         msgbuf->size *= 2;
@@ -84,33 +83,28 @@ static char get_escape(char ch)
 static void add_escaped_raw(lily_msgbuf *msgbuf, int is_bytestring,
         const char *str, int len)
 {
-    char escape_char = 0;
     int i, start;
 
     for (i = 0, start = 0;i < len;i++) {
         unsigned char ch = str[i];
-        int need_escape = 1;
 
-        if (isprint(ch) ||
-            (ch > 127 && is_bytestring == 0)) {
-            need_escape = 0;
-            escape_char = 0;
-        }
+        if (isprint(ch) && ch != '"')
+            continue;
+        else if (ch > 127 && is_bytestring == 0)
+            continue;
+
+        char escape_char = get_escape((char)ch);
+
+        if (i != start)
+            lily_mb_add_slice(msgbuf, str, start, i);
+
+        lily_mb_add_char(msgbuf, '\\');
+        if (escape_char)
+            lily_mb_add_char(msgbuf, escape_char);
         else
-            escape_char = get_escape((char)ch);
+            add_escaped_char(msgbuf, (char)ch);
 
-        if (need_escape) {
-            if (i != start)
-                lily_mb_add_slice(msgbuf, str, start, i);
-
-            lily_mb_add_char(msgbuf, '\\');
-            if (escape_char)
-                lily_mb_add_char(msgbuf, escape_char);
-            else
-                add_escaped_char(msgbuf, (char)ch);
-
-            start = i + 1;
-        }
+        start = i + 1;
     }
 
     if (i != start)
@@ -157,6 +151,16 @@ void lily_mb_escape_add_str(lily_msgbuf *msgbuf, const char *str)
     lily_mb_add_char(msgbuf, '"');
     add_escaped_raw(msgbuf, 0, str, strlen(str));
     lily_mb_add_char(msgbuf, '"');
+}
+
+void lily_mb_add_sized(lily_msgbuf *msgbuf, const char *text, int count)
+{
+    if ((msgbuf->pos + count + 1) > msgbuf->size)
+        resize_msgbuf(msgbuf, msgbuf->pos + count + 1);
+
+    memcpy(msgbuf->message + msgbuf->pos, text, count);
+    msgbuf->pos += count;
+    msgbuf->message[msgbuf->pos] = '\0';
 }
 
 /* Add a slice of text (start to stop) to the msgbuf. The slice does not need to
@@ -300,8 +304,7 @@ void lily_mb_add_fmt_va(lily_msgbuf *msgbuf, const char *fmt,
         va_list var_args)
 {
     char buffer[128];
-    int i, text_start;
-    size_t len;
+    uint32_t i, len, text_start;
 
     text_start = 0;
     len = strlen(fmt);
@@ -543,39 +546,33 @@ void lily_mb_add_value(lily_msgbuf *msgbuf, lily_vm_state *vm,
 const char *lily_mb_html_escape(lily_msgbuf *msgbuf, const char *input_str)
 {
     lily_mb_flush(msgbuf);
-    int start = 0, stop = 0;
-    const char *ch = &input_str[0];
 
-    while (1) {
-        if (*ch == '&') {
-            stop = (ch - input_str);
-            lily_mb_add_slice(msgbuf, input_str, start, stop);
+    const char *input_iter = input_str;
+    const char *find_str = "<&>";
+    const char *search_iter = strpbrk(input_iter, find_str);
+
+    if (search_iter == NULL)
+        return input_str;
+
+    const char *last_iter = input_iter;
+
+    do {
+        int offset = (int)(search_iter - last_iter);
+
+        if (offset)
+            lily_mb_add_sized(msgbuf, last_iter, offset);
+
+        if (*search_iter == '&')
             lily_mb_add(msgbuf, "&amp;");
-            start = stop + 1;
-        }
-        else if (*ch == '<') {
-            stop = (ch - input_str);
-            lily_mb_add_slice(msgbuf, input_str, start, stop);
+        else if (*search_iter == '<')
             lily_mb_add(msgbuf, "&lt;");
-            start = stop + 1;
-        }
-        else if (*ch == '>') {
-            stop = (ch - input_str);
-            lily_mb_add_slice(msgbuf, input_str, start, stop);
+        else if (*search_iter == '>')
             lily_mb_add(msgbuf, "&gt;");
-            start = stop + 1;
-        }
-        else if (*ch == '\0')
-            break;
 
-        ch++;
-    }
+        last_iter = search_iter + 1;
+        search_iter = strpbrk(last_iter, find_str);
+    } while (search_iter);
 
-    if (start != 0) {
-        stop = (ch - input_str);
-        lily_mb_add_slice(msgbuf, input_str, start, stop);
-        input_str = msgbuf->message;
-    }
-
-    return input_str;
+    lily_mb_add(msgbuf, last_iter);
+    return msgbuf->message;
 }

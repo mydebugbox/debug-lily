@@ -1,8 +1,8 @@
+#include "lily_alloc.h"
 #include "lily_core_types.h"
 #include "lily_generic_pool.h"
 #include "lily_symtab.h"
 #include "lily_type_maker.h"
-#include "lily_alloc.h"
 
 lily_generic_pool *lily_new_generic_pool(void)
 {
@@ -50,7 +50,7 @@ void lily_free_generic_pool(lily_generic_pool *gp)
 }
 
 static lily_class *find_in_cache(lily_generic_pool *gp, const char *name,
-        int generic_pos, int *next_pos)
+        int *next_pos)
 {
     int i = 0;
     lily_class *c = gp->cache_generics[i];
@@ -67,10 +67,10 @@ static lily_class *find_in_cache(lily_generic_pool *gp, const char *name,
     return NULL;
 }
 
-lily_type *lily_gp_push(lily_generic_pool *gp, const char *name, int pos)
+lily_type *lily_gp_push(lily_generic_pool *gp, const char *name, uint16_t pos)
 {
     int i;
-    lily_class *result = find_in_cache(gp, name, pos, &i);
+    lily_class *result = find_in_cache(gp, name, &i);
 
     if (result == NULL) {
         lily_class *new_generic = lily_new_raw_class(name, 0);

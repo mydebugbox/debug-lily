@@ -1,11 +1,10 @@
-#include <stdio.h>
 #include <stddef.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "lily_int_code_iter.h"
 #include "lily_int_opcode.h"
-
-#include "lily_value_structs.h"
+#include "lily_value.h"
 
 void lily_ci_init(lily_code_iter *iter, uint16_t *buffer, uint16_t start,
         uint16_t stop)
@@ -42,33 +41,39 @@ int lily_ci_next(lily_code_iter *iter)
     switch ((lily_opcode)*buffer) {
         case o_assign:
         case o_assign_noref:
-        case o_unary_not:
-        case o_unary_minus:
         case o_unary_bitwise_not:
+        case o_unary_minus:
+        case o_unary_not:
             iter->inputs_3 = 1;
             iter->outputs_4 = 1;
             iter->line_6 = 1;
 
             iter->round_total = 4;
             break;
+        case o_compare_eq:
+        case o_compare_greater:
+        case o_compare_greater_eq:
+        case o_compare_not_eq:
+            iter->inputs_3 = 2;
+            iter->jumps_5 = 1;
+            iter->line_6 = 1;
+
+            iter->round_total = 5;
+            break;
         case o_int_add:
-        case o_int_minus:
-        case o_int_modulo:
-        case o_int_multiply:
-        case o_int_divide:
-        case o_int_left_shift:
-        case o_int_right_shift:
         case o_int_bitwise_and:
         case o_int_bitwise_or:
         case o_int_bitwise_xor:
+        case o_int_divide:
+        case o_int_left_shift:
+        case o_int_minus:
+        case o_int_modulo:
+        case o_int_multiply:
+        case o_int_right_shift:
         case o_number_add:
+        case o_number_divide:
         case o_number_minus:
         case o_number_multiply:
-        case o_number_divide:
-        case o_compare_eq:
-        case o_compare_not_eq:
-        case o_compare_greater:
-        case o_compare_greater_eq:
         case o_subscript_get:
             iter->inputs_3 = 2;
             iter->outputs_4 = 1;
@@ -95,8 +100,8 @@ int lily_ci_next(lily_code_iter *iter)
 
             iter->round_total = 3;
             break;
-        case o_call_native:
         case o_call_foreign:
+        case o_call_native:
         case o_call_register:
             iter->special_1 = 1;
             iter->counter_2 = 1;
@@ -106,8 +111,8 @@ int lily_ci_next(lily_code_iter *iter)
 
             iter->round_total = buffer[2] + 5;
             break;
-        case o_return_value:
         case o_exception_raise:
+        case o_return_value:
             iter->inputs_3 = 1;
             iter->line_6 = 1;
 
@@ -159,24 +164,24 @@ int lily_ci_next(lily_code_iter *iter)
 
             iter->round_total = 5;
             break;
-        case o_global_set:
         case o_closure_set:
+        case o_global_set:
             iter->special_1 = 1;
             iter->inputs_3 = 1;
             iter->line_6 = 1;
 
             iter->round_total = 4;
             break;
+        case o_closure_function:
+        case o_closure_get:
+        case o_closure_new:
         case o_global_get:
-        case o_load_readonly:
-        case o_load_integer:
+        case o_instance_new:
         case o_load_boolean:
         case o_load_byte:
         case o_load_empty_variant:
-        case o_closure_get:
-        case o_instance_new:
-        case o_closure_new:
-        case o_closure_function:
+        case o_load_integer:
+        case o_load_readonly:
             iter->special_1 = 1;
             iter->outputs_4 = 1;
             iter->line_6 = 1;

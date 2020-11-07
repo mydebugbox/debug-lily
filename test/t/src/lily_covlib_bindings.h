@@ -28,27 +28,36 @@ lily_cid_at(s_, 1)
 #define INIT_Foreign(s_) \
 (lily_covlib_Foreign *)lily_push_foreign(s_, ID_Foreign(s_), (lily_destroy_func)destroy_Foreign, sizeof(lily_covlib_Foreign))
 
-#define PUSH_FlatOne(state)\
-lily_push_empty_variant(state, lily_cid_at(state, 2) + 1)
-#define PUSH_FlatThree(state)\
-lily_push_empty_variant(state, lily_cid_at(state, 2) + 1)
-#define PUSH_FlatTwo(state)\
-lily_push_empty_variant(state, lily_cid_at(state, 2) + 1)
-#define ID_FlatEnum(s_) \
+#define ARG_ForeignGeneric(s_, i_) \
+(lily_covlib_ForeignGeneric *)lily_arg_generic(s_, i_)
+#define AS_ForeignGeneric(v_) \
+(lily_covlib_ForeignGeneric *)lily_as_generic(v_)
+#define ID_ForeignGeneric(s_) \
 lily_cid_at(s_, 2)
+#define INIT_ForeignGeneric(s_) \
+(lily_covlib_ForeignGeneric *)lily_push_foreign(s_, ID_ForeignGeneric(s_), (lily_destroy_func)destroy_ForeignGeneric, sizeof(lily_covlib_ForeignGeneric))
+
+#define PUSH_FlatOne(state)\
+lily_push_empty_variant(state, lily_cid_at(state, 3) + 1)
+#define PUSH_FlatThree(state)\
+lily_push_empty_variant(state, lily_cid_at(state, 3) + 1)
+#define PUSH_FlatTwo(state)\
+lily_push_empty_variant(state, lily_cid_at(state, 3) + 1)
+#define ID_FlatEnum(s_) \
+lily_cid_at(s_, 3)
 
 #define PUSH_ScopedOne(state)\
-lily_push_empty_variant(state, lily_cid_at(state, 3) + 1)
+lily_push_empty_variant(state, lily_cid_at(state, 4) + 1)
 #define PUSH_ScopedThree(state)\
-lily_push_empty_variant(state, lily_cid_at(state, 3) + 1)
+lily_push_empty_variant(state, lily_cid_at(state, 4) + 1)
 #define PUSH_ScopedTwo(state)\
-lily_push_empty_variant(state, lily_cid_at(state, 3) + 1)
+lily_push_empty_variant(state, lily_cid_at(state, 4) + 1)
 #define ID_ScopedEnum(s_) \
-lily_cid_at(s_, 3)
+lily_cid_at(s_, 4)
 
 LILY_COVLIB_EXPORT
 const char *lily_covlib_info_table[] = {
-    "\04Container\0Foreign\0FlatEnum\0ScopedEnum\0"
+    "\05Container\0Foreign\0ForeignGeneric\0FlatEnum\0ScopedEnum\0"
     ,"N\04Container\0"
     ,"m\0<new>\0(String): Container"
     ,"m\0fetch\0(Container): String"
@@ -56,6 +65,7 @@ const char *lily_covlib_info_table[] = {
     ,"1\0value\0String"
     ,"C\01Foreign\0"
     ,"m\0<new>\0: Foreign"
+    ,"C\0ForeignGeneric\0[A,B]"
     ,"E\0FlatEnum\0"
     ,"V\0FlatOne\0"
     ,"V\0FlatThree\0"
@@ -66,15 +76,16 @@ const char *lily_covlib_info_table[] = {
     ,"V\0ScopedTwo\0"
     ,"F\0cover_ci_from_native\0(Function(Integer))"
     ,"F\0cover_func_check\0(Function(Integer),Function(Integer=>String)): Boolean"
-    ,"F\0cover_id_checks\0[A](Coroutine[Integer,Integer],Unit,A,String): Boolean"
+    ,"F\0cover_id_checks\0[A](Unit,A,String): Boolean"
     ,"F\0cover_list_reserve\0"
     ,"F\0cover_list_sfs\0"
     ,"F\0cover_misc_api\0"
     ,"F\0cover_optional_boolean\0(*Boolean,:b *Boolean,:c *Boolean): Integer"
     ,"F\0cover_optional_integer\0(*Integer,:b *Integer,:c *Integer): Integer"
+    ,"F\0cover_optional_keyarg_call\0(Function(*Integer,*Integer,*Integer=>Integer)): Integer"
     ,"F\0cover_optional_string\0(*String,:b *String,:c *String): String"
-    ,"F\0cover_value_as\0(Byte,ByteString,Exception,Coroutine[Integer,Integer],Double,File,Function(Integer),Hash[Integer,Integer],Integer,String)"
-    ,"F\0cover_value_group\0(Boolean,Byte,ByteString,Coroutine[Integer,Integer],Double,Option[Integer],File,Function(Integer),Hash[Integer,Integer],Foreign,Exception,Integer,List[Integer],String,Tuple[Integer],Unit,Option[Integer]): Boolean"
+    ,"F\0cover_value_as\0(Byte,ByteString,Exception,Double,File,Function(Integer),Hash[Integer,Integer],Integer,String)"
+    ,"F\0cover_value_group\0(Boolean,Byte,ByteString,Double,Option[Integer],File,Function(Integer),Hash[Integer,Integer],Foreign,Exception,Integer,List[Integer],String,Tuple[Integer],Unit,Option[Integer]): Boolean"
     ,"F\0isa_integer\0[A](A): Boolean"
     ,"F\0scoop_narrow\0(Function($1))"
     ,"F\0scoop_narrow_with_args\0(Function(Integer,String,$1=>Boolean))"
@@ -99,6 +110,7 @@ lily_call_entry_func lily_covlib_call_table[] = { \
     NULL, \
     NULL, \
     NULL, \
+    NULL, \
     lily_covlib__cover_ci_from_native, \
     lily_covlib__cover_func_check, \
     lily_covlib__cover_id_checks, \
@@ -107,6 +119,7 @@ lily_call_entry_func lily_covlib_call_table[] = { \
     lily_covlib__cover_misc_api, \
     lily_covlib__cover_optional_boolean, \
     lily_covlib__cover_optional_integer, \
+    lily_covlib__cover_optional_keyarg_call, \
     lily_covlib__cover_optional_string, \
     lily_covlib__cover_value_as, \
     lily_covlib__cover_value_group, \

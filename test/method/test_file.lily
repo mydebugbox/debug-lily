@@ -54,7 +54,7 @@ class TestFileMethods < TestCase
         assert_parse_fails(t, """\
             IOError: File not open for reading.\n\
             Traceback:\n    \
-                from [builtin]: in File.each_line\n    \
+                from [prelude]: in File.each_line\n    \
                 from [test]:2: in __main__\n\
         """,
         """
@@ -64,7 +64,7 @@ class TestFileMethods < TestCase
         assert_parse_fails(t, """\
             IOError: IO operation on closed file.\n\
             Traceback:\n    \
-                from [builtin]: in File.each_line\n    \
+                from [prelude]: in File.each_line\n    \
                 from [test]:3: in __main__\n\
         """,
         """
@@ -86,7 +86,7 @@ class TestFileMethods < TestCase
         assert_parse_fails(t, """\
             IOError: File not open for writing.\n\
             Traceback:\n    \
-                from [builtin]: in File.flush\n    \
+                from [prelude]: in File.flush\n    \
                 from [test]:2: in __main__\n\
         """,
         """
@@ -96,7 +96,7 @@ class TestFileMethods < TestCase
         assert_parse_fails(t, """\
             IOError: IO operation on closed file.\n\
             Traceback:\n    \
-                from [builtin]: in File.flush\n    \
+                from [prelude]: in File.flush\n    \
                 from [test]:3: in __main__\n\
         """,
         """
@@ -171,6 +171,8 @@ class TestFileMethods < TestCase
         var lines = expect.split("\n")
 
         f.print(12345)
+        f.close()
+        f = File.open("test\/file_for_io.txt", "a")
 
         for i in 0...lines.size() - 1: {
             f.print(lines[i])
@@ -190,7 +192,7 @@ class TestFileMethods < TestCase
         assert_parse_fails(t, """\
             IOError: File not open for writing.\n\
             Traceback:\n    \
-                from [builtin]: in File.print\n    \
+                from [prelude]: in File.print\n    \
                 from [test]:2: in __main__\n\
         """,
         """
@@ -200,7 +202,7 @@ class TestFileMethods < TestCase
         assert_parse_fails(t, """\
             IOError: IO operation on closed file.\n\
             Traceback:\n    \
-                from [builtin]: in File.print\n    \
+                from [prelude]: in File.print\n    \
                 from [test]:3: in __main__\n\
         """,
         """
@@ -263,7 +265,7 @@ class TestFileMethods < TestCase
         assert_parse_fails(t, """\
             IOError: File not open for reading.\n\
             Traceback:\n    \
-                from [builtin]: in File.read\n    \
+                from [prelude]: in File.read\n    \
                 from [test]:2: in __main__\n\
         """,
         """
@@ -273,7 +275,7 @@ class TestFileMethods < TestCase
         assert_parse_fails(t, """\
             IOError: IO operation on closed file.\n\
             Traceback:\n    \
-                from [builtin]: in File.read\n    \
+                from [prelude]: in File.read\n    \
                 from [test]:3: in __main__\n\
         """,
         """
@@ -330,7 +332,7 @@ class TestFileMethods < TestCase
         assert_parse_fails(t, """\
             IOError: File not open for reading.\n\
             Traceback:\n    \
-                from [builtin]: in File.read_line\n    \
+                from [prelude]: in File.read_line\n    \
                 from [test]:2: in __main__\n\
         """,
         """
@@ -340,7 +342,7 @@ class TestFileMethods < TestCase
         assert_parse_fails(t, """\
             IOError: IO operation on closed file.\n\
             Traceback:\n    \
-                from [builtin]: in File.read_line\n    \
+                from [prelude]: in File.read_line\n    \
                 from [test]:3: in __main__\n\
         """,
         """
@@ -391,7 +393,7 @@ class TestFileMethods < TestCase
         assert_parse_fails(t, """\
             IOError: File not open for writing.\n\
             Traceback:\n    \
-                from [builtin]: in File.write\n    \
+                from [prelude]: in File.write\n    \
                 from [test]:2: in __main__\n\
         """,
         """
@@ -401,7 +403,7 @@ class TestFileMethods < TestCase
         assert_parse_fails(t, """\
             IOError: IO operation on closed file.\n\
             Traceback:\n    \
-                from [builtin]: in File.write\n    \
+                from [prelude]: in File.write\n    \
                 from [test]:3: in __main__\n\
         """,
         """

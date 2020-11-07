@@ -7,12 +7,35 @@
 # include "lily_token.h"
 
 typedef enum {
-    tree_call, tree_subscript, tree_list, tree_hash, tree_parenth,
-    tree_local_var, tree_defined_func, tree_global_var, tree_oo_access,
-    tree_unary, tree_type, tree_typecast, tree_tuple, tree_property,
-    tree_variant, tree_lambda, tree_literal, tree_inherited_new, tree_method,
-    tree_static_func, tree_self, tree_upvalue, tree_boolean, tree_byte,
-    tree_integer, tree_oo_cached, tree_named_call, tree_named_arg, tree_binary
+    tree_binary,
+    tree_boolean,
+    tree_byte,
+    tree_cached,
+    tree_call,
+    tree_defined_func,
+    tree_global_var,
+    tree_hash,
+    tree_inherited_new,
+    tree_integer,
+    tree_lambda,
+    tree_list,
+    tree_literal,
+    tree_local_var,
+    tree_method,
+    tree_named_arg,
+    tree_named_call,
+    tree_oo_access,
+    tree_parenth,
+    tree_property,
+    tree_self,
+    tree_static_func,
+    tree_subscript,
+    tree_tuple,
+    tree_typecast,
+    tree_typecast_type,
+    tree_unary,
+    tree_upvalue,
+    tree_variant,
 } lily_tree_type;
 
 typedef struct lily_ast_ {
@@ -46,7 +69,6 @@ typedef struct lily_ast_ {
         int16_t backing_value;
         /* For other kinds of literals, this is their register spot. */
         uint16_t literal_reg_spot;
-        uint16_t keep_first_call_arg;
     };
 
     union {

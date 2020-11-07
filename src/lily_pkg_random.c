@@ -1,5 +1,5 @@
-#include <stdio.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <time.h>
 
 #include "lily.h"
@@ -32,6 +32,7 @@ typedef struct {
 
 static void destroy_Random(lily_random_Random *r)
 {
+    (void)r;
 }
 
 void lily_random_Random_new(lily_state *s)

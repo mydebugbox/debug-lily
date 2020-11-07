@@ -1,7 +1,7 @@
 #include <string.h>
 
-#include "lily_expr.h"
 #include "lily_alloc.h"
+#include "lily_expr.h"
 
 #define AST_COMMON_INIT(a, tt) \
 lily_ast *a; \
@@ -125,7 +125,7 @@ void lily_free_expr_state(lily_expr_state *es)
         save_iter = save_temp;
     }
 
-    int i;
+    uint32_t i;
     for (i = 0;i < es->checkpoint_size;i++)
         lily_free(es->checkpoints[i]);
 
@@ -159,7 +159,7 @@ static void grow_checkpoints(lily_expr_state *es)
     es->checkpoints = lily_realloc(es->checkpoints,
             es->checkpoint_size * sizeof(*es->checkpoints));
 
-    int i;
+    uint32_t  i;
     for (i = es->checkpoint_pos;i < es->checkpoint_size;i++) {
         lily_ast_checkpoint_entry *new_point = lily_malloc(sizeof(*new_point));
         es->checkpoints[i] = new_point;
@@ -345,8 +345,7 @@ static void merge_value(lily_expr_state *es, lily_ast *new_tree)
  *
  */
 
-static void push_tree_arg(lily_expr_state *es, lily_ast *entered_tree,
-        lily_ast *arg)
+static void push_tree_arg(lily_ast *entered_tree, lily_ast *arg)
 {
     /* This happens when the parser sees () and calls to collect an argument
        just to be sure that anything in between is collected. It's fine, but
@@ -373,7 +372,7 @@ void lily_es_collect_arg(lily_expr_state *es)
 {
     lily_ast_save_entry *entry = es->save_chain;
 
-    push_tree_arg(es, entry->entered_tree, es->root);
+    push_tree_arg(entry->entered_tree, es->root);
 
     /* Keep all of the expressions independent. */
     es->root = NULL;
@@ -409,7 +408,7 @@ void lily_es_leave_tree(lily_expr_state *es)
 {
     lily_ast_save_entry *entry = es->save_chain;
 
-    push_tree_arg(es, entry->entered_tree, es->root);
+    push_tree_arg(entry->entered_tree, es->root);
 
     es->root = entry->root_tree;
     es->active = entry->active_tree;
@@ -457,7 +456,7 @@ void lily_es_push_binary_op(lily_expr_state *es, lily_token op)
 
     /* Active is always non-NULL, because binary always comes after a value of
        some kind. */
-    if (active->tree_type < tree_binary) {
+    if (active->tree_type != tree_binary) {
         /* Only a value or call so far. The binary op takes over. */
         if (es->root == active)
             es->root = new_ast;
@@ -467,7 +466,7 @@ void lily_es_push_binary_op(lily_expr_state *es, lily_token op)
         new_ast->left = active;
         es->active = new_ast;
     }
-    else if (active->tree_type == tree_binary) {
+    else {
         /* Figure out how the two trees will fit together. */
         int new_prio, active_prio;
         new_prio = new_ast->priority;
@@ -519,7 +518,7 @@ void lily_es_push_binary_op(lily_expr_state *es, lily_token op)
 
 static void push_type(lily_expr_state *es, lily_type *type)
 {
-    AST_COMMON_INIT(a, tree_type)
+    AST_COMMON_INIT(a, tree_typecast_type)
     a->type = type;
 
     merge_value(es, a);

@@ -84,7 +84,7 @@ class TestBadCall < TestCase
         # class calls (wrong count from method to ctor)
 
         assert_parse_fails(t, """\
-            SyntaxError: Wrong number of arguments to Test.method (0 for 1).\n    \
+            SyntaxError: Wrong number of arguments to Test.method (1 for 2).\n    \
                 from [test]:4:\n\
         """,
         """\
@@ -98,7 +98,7 @@ class TestBadCall < TestCase
         # class calls (wrong count to class method)
 
         assert_parse_fails(t, """\
-            SyntaxError: Wrong number of arguments to Test.method (1 for 0).\n    \
+            SyntaxError: Wrong number of arguments to Test.method (2 for 1).\n    \
                 from [test]:7:\n\
         """,
         """\
@@ -151,6 +151,20 @@ class TestBadCall < TestCase
             Example.g(10, "20")
         """)
 
+        # class calls (wrong arg count to empty static method)
+
+        assert_parse_fails(t, """\
+            SyntaxError: Wrong number of arguments to Time.now (1 for 0).\n    \
+                from [test]:5:\n\
+        """,
+        """\
+            import (Time) time
+
+            var t = Time.now()
+
+            t.now()
+        """)
+
         # class calls (wrong arg count to static call of static method)
 
         assert_parse_fails(t, """\
@@ -189,7 +203,7 @@ class TestBadCall < TestCase
         # enum calls (empty flat variant with args)
 
         assert_parse_fails(t, """\
-            SyntaxError: Variant Gamma should not get args.\n    \
+            SyntaxError: Gamma is an empty variant that should not be called.\n    \
                 from [test]:7:\n\
         """,
         """\
@@ -333,6 +347,19 @@ class TestBadCall < TestCase
             define f(:a a: Integer) {}
             f(:a "")
         """)
+
+        # keyarg calls (valid first arg)
+
+        assert_parse_fails(t, """\
+            SyntaxError: Call to f is missing parameters:\n\
+            * Parameter #2 (:b) of type String.\n    \
+                from [test]:3:\n\
+        """,
+        """\
+            define f(:a a: Integer, :b b: String) {}
+
+            f(:a "1")
+        """)
     }
 
     public define test_mixarg_calls
@@ -412,7 +439,7 @@ class TestBadCall < TestCase
         # vararg calls (wrong count when using class method)
 
         assert_parse_fails(t, """\
-            SyntaxError: Wrong number of arguments to Test.method (0 for 1+).\n    \
+            SyntaxError: Wrong number of arguments to Test.method (1 for 2+).\n    \
                 from [test]:7:\n\
         """,
         """\

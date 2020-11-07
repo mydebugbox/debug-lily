@@ -28,7 +28,7 @@ else()
         set(CMAKE_C_FLAGS      "${CMAKE_C_FLAGS} -O2")
     endif(NOT QUICK_BUILD)
 
-    set(CMAKE_C_FLAGS          "${CMAKE_C_FLAGS} -Wall")
+    set(CMAKE_C_FLAGS          "${CMAKE_C_FLAGS} -Wall -Wextra -Wimplicit-fallthrough=0 -Wsign-compare -Wshadow")
 
     if(WITH_COVERAGE)
         set(CMAKE_C_FLAGS      "${CMAKE_C_FLAGS} -O0 -fprofile-arcs -ftest-coverage")
@@ -40,7 +40,7 @@ set(LIBRARY_OUTPUT_PATH    "${PROJECT_BINARY_DIR}/lib")
 set(EXECUTABLE_OUTPUT_PATH "${PROJECT_BINARY_DIR}")
 
 set(LILY_MAJOR             "1")
-set(LILY_MINOR             "13")
+set(LILY_MINOR             "14")
 
 add_definitions(-DLILY_VERSION_DIR="${LILY_MAJOR}_${LILY_MINOR}")
 
@@ -48,7 +48,7 @@ add_definitions(-DLILY_VERSION_DIR="${LILY_MAJOR}_${LILY_MINOR}")
 # Unfortunately, CMake doesn't seem to distinguish *BSD from the other *nixen.
 STRING(REGEX MATCH "BSD" IS_BSD ${CMAKE_SYSTEM_NAME})
 
-if(APPLE OR IS_BSD OR MINGW OR MSVC)
+if(IS_BSD OR MINGW OR MSVC OR APPLE)
     set(LILY_NEED_DL 0)
 else()
     set(LILY_NEED_DL 1)

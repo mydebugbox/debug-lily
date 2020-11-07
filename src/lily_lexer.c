@@ -1,15 +1,15 @@
 #include <ctype.h>
-#include <stdio.h>
-#include <string.h>
-#include <stdlib.h>
 #include <errno.h>
 #include <stddef.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
+#include "lily_alloc.h"
 #include "lily_config.h"
 #include "lily_lexer.h"
 #include "lily_lexer_data.h"
 #include "lily_utf8.h"
-#include "lily_alloc.h"
 
 /** Lexer init and deletion **/
 lily_lex_state *lily_new_lex_state(lily_raiser *raiser)
@@ -178,7 +178,7 @@ static int read_file_line(lily_lex_state *lex)
         READER_GROW_CHECK
         READER_EOF_CHECK(ch, EOF)
 
-        source[i] = ch;
+        source[i] = (char)ch;
 
         if (ch == '\r' || ch == '\n') {
             lex->line_num++;
@@ -284,19 +284,21 @@ static uint16_t scan_escape(char *ch, char *out)
     else if (*ch == '/')
         *out = LILY_PATH_CHAR;
     else if (*ch >= '0' && *ch <= '9') {
-        /* It's a numeric escape. Keep swallowing up numeric values until either
-           3 are caught in total OR there is a possible 'overflow'.
-           This...seems like the right thing to do, I guess. */
-        int i, value = 0, total = 0;
-        for (i = 0;i < 3;i++, ch++) {
+        /* This is a numeric escape. Scan up to three digits, including any
+           leading zeroes. This allows \0 as well as \000. */
+        int total;
+        uint16_t i;
+
+        for (i = 0, total = 0;i < 3;i++, ch++) {
             if (*ch < '0' || *ch > '9')
                 break;
 
-            value = *ch - '0';
-            if ((total * 10) + value > 255)
-                break;
+            total = (total * 10) + (*ch - '0');
 
-            total = (total * 10) + value;
+            if (total > 255) {
+                i = 0;
+                break;
+            }
         }
 
         result = i;
@@ -683,10 +685,10 @@ static void scan_docblock(lily_lex_state *lex, char **source_ch)
    for without having to send any flags. */
 static void scan_string(lily_lex_state *lex, char **source_ch)
 {
-    int label_pos = 0;
     int is_multiline = 0;
     int is_bytestring = 0;
     int backslash_before_newline = 0;
+    uint32_t label_pos = 0;
     char *label = lex->label;
     char *ch = *source_ch;
 
@@ -903,6 +905,13 @@ static void scan_string_for_lambda(lily_lex_state *lex, char **source_ch,
             if (*ch == '"' ||
                 (is_multiline == 0 && *ch == '\n'))
                 backslash_before = 1;
+            else if (*ch == '\\') {
+                /* This is an escaped backslash. Scoop it up so the second slash
+                   can't be seen as an escape for a double quote. */
+                label[i] = *ch;
+                i++;
+                ch++;
+            }
         }
         else {
             label[i] = *ch;
@@ -940,12 +949,13 @@ static void scan_lambda(lily_lex_state *lex, char **source_ch)
         }
         else if (*ch == '#' &&
                  *(ch + 1) == '[') {
-            int saved_line_num = lex->line_num;
+            uint16_t saved_line_num = lex->line_num;
+
             scan_multiline_comment(lex, &ch);
             /* For each line that the multi-line comment hit, add a newline to
                the lambda so that error lines are right. */
             if (saved_line_num != lex->line_num) {
-                int increase = lex->line_num - saved_line_num;
+                uint16_t increase = lex->line_num - saved_line_num;
                 /* Write \n for each line seen so that the lines match up.
                    Make sure that lex->label can handle the increases AND the
                    now-current line (plus 3 for that termination). */
@@ -1521,6 +1531,7 @@ char *lily_read_template_content(lily_lex_state *lex, int *has_more)
         if (read_line(lex)) {
             ch = lex->read_cursor;
             buffer = lex->label;
+            buffer_stop = buffer + lex->label_size - 1;
         }
         else {
             lex->token = tk_eof;
@@ -1542,11 +1553,12 @@ char *lily_read_template_content(lily_lex_state *lex, int *has_more)
             }
         }
         else if (*ch == '\n') {
-            int offset = buffer - lex->label;
+            ptrdiff_t offset = buffer - lex->label;
 
             if (read_line(lex)) {
                 ch = lex->read_cursor - 1;
                 buffer = lex->label + offset;
+                buffer_stop = buffer + lex->label_size - offset - 1;
             }
             else {
                 lex->token = tk_eof;
@@ -1577,7 +1589,7 @@ const char *tokname(lily_token t)
     return token_name_table[t];
 }
 
-int lily_priority_for_token(lily_token t)
+uint8_t lily_priority_for_token(lily_token t)
 {
     return priority_table[t];
 }

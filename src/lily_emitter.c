@@ -1,14 +1,12 @@
-#include <string.h>
-#include <stdint.h>
 #include <limits.h>
+#include <stdint.h>
+#include <string.h>
 
 #include "lily_alloc.h"
-#include "lily_expr.h"
 #include "lily_emitter.h"
-#include "lily_parser.h"
-
-#include "lily_int_opcode.h"
 #include "lily_int_code_iter.h"
+#include "lily_int_opcode.h"
+#include "lily_parser.h"
 
 extern lily_type *lily_question_type;
 extern lily_type *lily_scoop_type;
@@ -25,9 +23,9 @@ extern lily_type *lily_unset_type;
  *                          |_|
  */
 
-static lily_proto_stack *new_proto_stack(int);
+static lily_proto_stack *new_proto_stack(uint16_t);
 static void free_proto_stack(lily_proto_stack *);
-static lily_storage_stack *new_storage_stack(int);
+static lily_storage_stack *new_storage_stack(uint16_t);
 static void free_storage_stack(lily_storage_stack *);
 static void clear_storages(lily_storage_stack *, uint16_t);
 
@@ -36,7 +34,7 @@ lily_emit_state *lily_new_emit_state(lily_symtab *symtab, lily_raiser *raiser)
     lily_emit_state *emit = lily_malloc(sizeof(*emit));
 
     emit->patches = lily_new_buffer_u16(4);
-    emit->match_cases = lily_malloc(sizeof(*emit->match_cases) * 4);
+    emit->match_cases = lily_new_buffer_u16(4);
     emit->tm = lily_new_type_maker();
     emit->ts = lily_new_type_system(emit->tm);
     emit->code = lily_new_buffer_u16(32);
@@ -51,13 +49,11 @@ lily_emit_state *lily_new_emit_state(lily_symtab *symtab, lily_raiser *raiser)
     emit->transform_size = 0;
 
     emit->expr_strings = lily_new_string_pile();
-    emit->match_case_pos = 0;
-    emit->match_case_size = 4;
 
     emit->block = NULL;
 
     emit->function_depth = 0;
-
+    emit->symtab = symtab;
     emit->raiser = raiser;
     emit->expr_num = 1;
 
@@ -89,8 +85,7 @@ void lily_rewind_emit_state(lily_emit_state *emit)
     lily_u16_set_pos(emit->patches, 0);
     lily_u16_set_pos(emit->code, 0);
     lily_u16_set_pos(emit->closure_spots, 0);
-
-    emit->match_case_pos = 0;
+    lily_u16_set_pos(emit->match_cases, 0);
 
     lily_block *block_iter = emit->scope_block;
     lily_block *main_block = block_iter;
@@ -140,10 +135,10 @@ void lily_free_emit_state(lily_emit_state *emit)
     lily_free_type_maker(emit->tm);
     lily_free(emit->transform_table);
     lily_free_type_system(emit->ts);
-    lily_free(emit->match_cases);
     if (emit->closure_aux_code)
         lily_free_buffer_u16(emit->closure_aux_code);
     lily_free_buffer_u16(emit->closure_spots);
+    lily_free_buffer_u16(emit->match_cases);
     lily_free_buffer_u16(emit->patches);
     lily_free_buffer_u16(emit->code);
     lily_free(emit);
@@ -162,8 +157,7 @@ static lily_storage *get_storage(lily_emit_state *, lily_type *);
 static lily_block *find_deepest_loop(lily_emit_state *);
 static void eval_tree(lily_emit_state *, lily_ast *, lily_type *);
 
-void lily_emit_write_class_init(lily_emit_state *emit, lily_class *cls,
-        uint16_t line_num)
+void lily_emit_write_class_init(lily_emit_state *emit, uint16_t line_num)
 {
     lily_storage *self = emit->scope_block->self;
 
@@ -172,7 +166,7 @@ void lily_emit_write_class_init(lily_emit_state *emit, lily_class *cls,
 }
 
 void lily_emit_write_shorthand_ctor(lily_emit_state *emit, lily_class *cls,
-        lily_var *var_iter, uint16_t line_num)
+        lily_var *var_iter)
 {
     lily_named_sym *prop_iter = cls->members;
     uint16_t self_reg_spot = emit->scope_block->self->reg_spot;
@@ -303,7 +297,7 @@ int lily_emit_try_write_continue(lily_emit_state *emit)
 
 /* Write a conditional jump. 0 means jump if false, 1 means jump if true. The
    ast is the thing to test. */
-static void emit_jump_if(lily_emit_state *emit, lily_ast *ast, int jump_on)
+static void emit_jump_if(lily_emit_state *emit, lily_ast *ast, uint16_t jump_on)
 {
     lily_u16_write_4(emit->code, o_jump_if, jump_on, ast->result->reg_spot, 3);
 
@@ -328,7 +322,8 @@ static void write_patches_since(lily_emit_state *emit, int to)
            This problem is worked around by having jumps write down their offset
            to the opcode, and including that in the jump. */
         if (patch != 0) {
-            int adjust = lily_u16_get(emit->code, patch);
+            uint16_t adjust = lily_u16_get(emit->code, patch);
+
             lily_u16_set_at(emit->code, patch, pos + adjust - patch);
         }
     }
@@ -358,11 +353,13 @@ static lily_storage *new_storage(void)
 /** Storages are used to hold intermediate values. The emitter is responsible
     for handing them out, controlling their position, and making new ones.
     Most of that is done in get_storage. **/
-static lily_storage_stack *new_storage_stack(int initial)
+static lily_storage_stack *new_storage_stack(uint16_t initial)
 {
     lily_storage_stack *result = lily_malloc(sizeof(*result));
+    uint16_t i;
+
     result->data = lily_malloc(initial * sizeof(*result->data));
-    int i;
+
     for (i = 0;i < initial;i++) {
         lily_storage *s = new_storage();
 
@@ -371,16 +368,15 @@ static lily_storage_stack *new_storage_stack(int initial)
 
     result->start = 0;
     result->size = initial;
-
     return result;
 }
 
 static void free_storage_stack(lily_storage_stack *stack)
 {
-    int i;
-    for (i = 0;i < stack->size;i++) {
+    uint16_t i;
+
+    for (i = 0;i < stack->size;i++)
         lily_free(stack->data[i]);
-    }
 
     lily_free(stack->data);
     lily_free(stack);
@@ -388,10 +384,10 @@ static void free_storage_stack(lily_storage_stack *stack)
 
 static void grow_storages(lily_storage_stack *stack)
 {
-    int i;
-    int new_size = stack->size * 2;
+    uint16_t new_size = stack->size * 2;
     lily_storage **new_data = lily_realloc(stack->data,
-            sizeof(*new_data) * stack->size * 2);
+            sizeof(*new_data) * new_size);
+    uint16_t i;
 
     /* Storages are taken pretty often, so eagerly initialize them for a little
        bit more speed. */
@@ -418,8 +414,8 @@ static void clear_storages(lily_storage_stack *stack, uint16_t count)
 static lily_storage *get_storage(lily_emit_state *emit, lily_type *type)
 {
     lily_storage_stack *stack = emit->storages;
-    int expr_num = emit->expr_num;
-    int i;
+    uint32_t expr_num = emit->expr_num;
+    uint16_t i;
     lily_storage *s = NULL;
 
     for (i = stack->start;i < stack->size;i++) {
@@ -483,7 +479,10 @@ static lily_block *next_block(lily_emit_state *emit)
     new_block->class_entry = emit->block->class_entry;
     new_block->self = NULL;
     new_block->patch_start = lily_u16_pos(emit->patches);
-    new_block->last_exit = -1;
+
+    /* This can't be 0, or `define f: Integer {}` passes if no code has been
+       written before it. */
+    new_block->last_exit = UINT16_MAX;
     new_block->flags = 0;
     new_block->var_count = 0;
     new_block->code_start = lily_u16_pos(emit->code);
@@ -609,7 +608,7 @@ void lily_emit_enter_match_block(lily_emit_state *emit)
 
     block->flags |= BLOCK_ALWAYS_EXITS;
     block->block_type = block_match;
-    block->match_case_start = emit->match_case_pos;
+    block->match_case_start = lily_u16_pos(emit->match_cases);
     emit->block = block;
 }
 
@@ -651,7 +650,7 @@ void lily_emit_leave_block(lily_emit_state *emit)
         lily_u16_write_2(emit->code, o_jump, (uint16_t)x);
     }
     else if (block_type == block_match)
-        emit->match_case_pos = emit->block->match_case_start;
+        lily_u16_set_pos(emit->match_cases, emit->block->match_case_start);
     else if (block_type == block_try)
         /* The vm expects that the last except block will have a 'next' of 0 to
            indicate the end of the 'except' chain. Remove the patch that the
@@ -672,7 +671,7 @@ static void finish_block_code(lily_emit_state *emit)
 {
     lily_block *block = emit->scope_block;
     lily_var *var = block->scope_var;
-    lily_value *v = lily_vs_nth(emit->symtab->literals, var->reg_spot);
+    lily_value *v = lily_literal_at(emit->symtab, var->reg_spot);
     lily_function_val *f = v->value.function;
 
     uint16_t code_start, code_size;
@@ -875,7 +874,7 @@ void lily_emit_create_block_self(lily_emit_state *emit, lily_type *self_type)
     self->flags |= STORAGE_IS_LOCKED;
     /* This isn't cleared by default because it's the only storage that can be
        closed over. */
-    self->closure_spot = (uint16_t)-1;
+    self->closure_spot = UINT16_MAX;
     emit->scope_block->self = self;
 }
 
@@ -921,7 +920,7 @@ static int can_use_self(lily_emit_state *emit, uint16_t flag)
     /* Make sure self is going to be in the closure. */
     lily_storage *origin_self = origin->self;
 
-    if (origin_self->closure_spot == (uint16_t)-1) {
+    if (origin_self->closure_spot == UINT16_MAX) {
         /* The resulting depth for the backing closure is always the same:
            __main__ is 1, class is 2, backing define is 3. */
         uint16_t depth = 3;
@@ -1043,13 +1042,13 @@ static void setup_for_transform(lily_emit_state *emit,
         emit->transform_size = emit->scope_block->next_reg_spot;
     }
 
-    memset(emit->transform_table, (uint16_t)-1,
+    memset(emit->transform_table, UINT16_MAX,
             next_reg_spot * sizeof(*emit->transform_table));
 
     lily_var *func_var = emit->scope_block->scope_var;
     uint16_t line_num = func_var->line_num;
     uint16_t local_count = func_var->type->subtype_count - 1;
-    int i, count = 0;
+    uint16_t i, count = 0;
 
     for (i = 0;
          i < lily_u16_pos(emit->closure_spots);
@@ -1066,7 +1065,7 @@ static void setup_for_transform(lily_emit_state *emit,
             count++;
             /* This prevents other closures at this level from thinking this
                local belongs to them. */
-            lily_u16_set_at(emit->closure_spots, i + 1, (uint16_t)-1);
+            lily_u16_set_at(emit->closure_spots, i + 1, UINT16_MAX);
         }
     }
     /* If there are locals in one of the inner functions, write them down. This
@@ -1079,7 +1078,7 @@ static void setup_for_transform(lily_emit_state *emit,
 
         int pos = 1;
         for (i = 0;i < next_reg_spot;i++) {
-            if (emit->transform_table[i] != (uint16_t) -1) {
+            if (emit->transform_table[i] != UINT16_MAX) {
                 locals[pos] = i;
                 pos++;
             }
@@ -1135,7 +1134,7 @@ static int count_transforms(lily_emit_state *emit, int start)
     int count = 0;
 
     if (op == o_call_register &&
-        transform_table[buffer[pos]] != (uint16_t)-1)
+        transform_table[buffer[pos]] != UINT16_MAX)
         count++;
 
     pos += ci.special_1 + ci.counter_2;
@@ -1143,7 +1142,7 @@ static int count_transforms(lily_emit_state *emit, int start)
     if (ci.inputs_3) {
         int i;
         for (i = 0;i < ci.inputs_3;i++) {
-            if (transform_table[buffer[pos + i]] != (uint16_t)-1)
+            if (transform_table[buffer[pos + i]] != UINT16_MAX)
                 count++;
         }
     }
@@ -1179,7 +1178,7 @@ static void perform_closure_transform(lily_emit_state *emit,
     else
         lily_u16_set_pos(emit->closure_aux_code, 0);
 
-    int iter_start = emit->block->code_start;
+    uint16_t iter_start = emit->block->code_start;
     int is_backing = (scope_block->flags & BLOCK_CLOSURE_ORIGIN);
     uint16_t first_line = iter_for_first_line(emit, iter_start);
 
@@ -1195,7 +1194,7 @@ static void perform_closure_transform(lily_emit_state *emit,
 
         lily_storage *self = scope_block->self;
 
-        if (self && self->closure_spot != (uint16_t)-1) {
+        if (self && self->closure_spot != UINT16_MAX) {
             /* Class constructors can't be closures and enums don't have a
                constructor. So if the backing closure has self inside, then it
                has to come from a class/enum method. Those methods will always
@@ -1220,7 +1219,7 @@ static void perform_closure_transform(lily_emit_state *emit,
     lily_code_iter ci;
     lily_ci_init(&ci, emit->code->data, iter_start, lily_u16_pos(emit->code));
     uint16_t *transform_table = emit->transform_table;
-    int jump_adjust = 0;
+    uint16_t jump_adjust = 0;
 
 /* If the input at the position given by 'x' is within the closure, then write
    an instruction to fetch it from the closure first. This makes sure that if
@@ -1229,7 +1228,7 @@ static void perform_closure_transform(lily_emit_state *emit,
 #define MAYBE_TRANSFORM_INPUT(x, z) \
 { \
     uint16_t id = transform_table[buffer[x]]; \
-    if (id != (uint16_t)-1) { \
+    if (id != UINT16_MAX) { \
         lily_u16_write_4(emit->closure_aux_code, z, id, \
                 buffer[x], first_line); \
         jump_adjust += 4; \
@@ -1347,9 +1346,9 @@ static void perform_closure_transform(lily_emit_state *emit,
             lily_u16_write_1(emit->closure_aux_code, buffer[pos]);
 
         if (ci.outputs_4) {
-            int stop = output_start + ci.outputs_4;
+            int output_stop = output_start + ci.outputs_4;
 
-            for (i = output_start;i < stop;i++) {
+            for (i = output_start;i < output_stop;i++) {
                 MAYBE_TRANSFORM_INPUT(i, o_closure_set)
             }
         }
@@ -1357,7 +1356,7 @@ static void perform_closure_transform(lily_emit_state *emit,
 
     /* It's time to patch the unfixed jumps, if there are any. The area from
        patch_stop to the ending position contains jumps to be fixed. */
-    int j;
+    uint16_t j;
     for (j = patch_stop;j < lily_u16_pos(emit->patches);j += 2) {
         /* This is where, in the new code, that the jump is located. */
         int aux_pos = lily_u16_get(emit->patches, j);
@@ -1415,21 +1414,18 @@ static void eval_enforce_value(lily_emit_state *, lily_ast *, lily_type *,
     * Variants and user classes have the same layout, so o_property_get is
       written to extract variant values that the user is interested in. **/
 
-static void grow_match_cases(lily_emit_state *emit)
-{
-    emit->match_case_size *= 2;
-    emit->match_cases = lily_realloc(emit->match_cases,
-        sizeof(*emit->match_cases) * emit->match_case_size);
-}
-
 static int is_duplicate_case(lily_emit_state *emit, lily_class *cls)
 {
-    uint16_t cls_id = cls->id;
     uint16_t i;
+    uint16_t stop = lily_u16_pos(emit->match_cases);
+    uint16_t cls_id = cls->id;
+    lily_buffer_u16 *cases = emit->match_cases;
     int result = 0;
 
-    for (i = emit->block->match_case_start;i < emit->match_case_pos;i++) {
-        if (emit->match_cases[i] == cls_id) {
+    for (i = emit->block->match_case_start;i < stop;i++) {
+        uint16_t match_case = lily_u16_get(cases, i);
+
+        if (match_case == cls_id) {
             result = 1;
             break;
         }
@@ -1466,9 +1462,6 @@ int lily_emit_try_match_switch(lily_emit_state *emit, lily_class *cls)
 {
     lily_block *block = emit->block;
 
-    if (emit->match_case_pos >= emit->match_case_size)
-        grow_match_cases(emit);
-
     if (is_duplicate_case(emit, cls) ||
         block->flags & BLOCK_FINAL_BRANCH)
         return 0;
@@ -1476,15 +1469,15 @@ int lily_emit_try_match_switch(lily_emit_state *emit, lily_class *cls)
     uint16_t match_reg = block->match_reg;
 
     lily_emit_branch_switch(emit);
-    emit->match_cases[emit->match_case_pos] = cls->id;
-    emit->match_case_pos++;
+    lily_u16_write_1(emit->match_cases, cls->id);
 
     /* If this isn't the class, jump to the next branch (or exit). */
     lily_u16_write_4(emit->code, o_jump_if_not_class, cls->id, match_reg, 3);
     lily_u16_write_1(emit->patches, lily_u16_pos(emit->code) - 1);
 
     if (cls->item_kind & ITEM_IS_VARIANT) {
-        uint16_t count = emit->match_case_pos - block->match_case_start;
+        uint16_t total = lily_u16_pos(emit->match_cases);
+        uint16_t count = total - block->match_case_start;
 
         if (count == cls->parent->variant_size)
             block->flags |= BLOCK_FINAL_BRANCH;
@@ -1503,7 +1496,8 @@ int lily_emit_try_match_finalize(lily_emit_state *emit)
     lily_class *match_cls = block->match_type->cls;
 
     if (match_cls->item_kind & ITEM_IS_ENUM) {
-        uint16_t count = emit->match_case_pos - block->match_case_start;
+        uint16_t total = lily_u16_pos(emit->match_cases);
+        uint16_t count = total - block->match_case_start;
 
         if (count == match_cls->variant_size)
             return 0;
@@ -1527,7 +1521,7 @@ void lily_eval_match(lily_emit_state *emit, lily_expr_state *es)
         lily_raise_syn(emit->raiser,
                 "Match expression is not a user class or enum.");
 
-    block->match_case_start = emit->match_case_pos;
+    block->match_case_start = lily_u16_pos(emit->match_cases);
     block->last_exit = lily_u16_pos(emit->code);
     block->match_reg = ast->result->reg_spot;
     block->match_type = ast->result->type;
@@ -1548,20 +1542,19 @@ void lily_eval_match(lily_emit_state *emit, lily_expr_state *es)
 /** These are various helping functions collected together. There's no real
     organization other than that. **/
 
-static lily_proto_stack *new_proto_stack(int initial)
+static lily_proto_stack *new_proto_stack(uint16_t initial)
 {
     lily_proto_stack *result = lily_malloc(sizeof(*result));
 
     result->data = lily_malloc(initial * sizeof(*result->data));
     result->pos = 0;
     result->size = initial;
-
     return result;
 }
 
 static void free_proto_stack(lily_proto_stack *stack)
 {
-    int i;
+    uint16_t i;
     /* Stop at pos instead of size because there's no eager init here. */
     for (i = 0;i < stack->pos;i++) {
         lily_proto *p = stack->data[i];
@@ -1634,7 +1627,7 @@ lily_proto *lily_emit_new_proto(lily_emit_state *emit, const char *module_path,
 
 lily_proto *lily_emit_proto_for_var(lily_emit_state *emit, lily_var *var)
 {
-    lily_value *v = lily_vs_nth(emit->symtab->literals, var->reg_spot);
+    lily_value *v = lily_literal_at(emit->symtab, var->reg_spot);
     return v->value.function->proto;
 }
 
@@ -1733,13 +1726,13 @@ static lily_type *get_subscript_result(lily_emit_state *emit, lily_type *type,
    function does not create a storage. Instead, the caller is expected to
    provide a storage of the appropriate type. Said storage should have a spot
    that is 'reg_spot'. */
-static void write_build_op(lily_emit_state *emit, int opcode,
-        lily_ast *first_arg, int line_num, int num_values, lily_storage *s)
+static void write_build_op(lily_emit_state *emit, uint16_t opcode,
+        lily_ast *first_arg, uint16_t line_num, uint16_t num_values,
+        lily_storage *s)
 {
-    int i;
     lily_ast *arg;
-    lily_u16_write_prep(emit->code, 5 + num_values);
 
+    lily_u16_write_prep(emit->code, 5 + num_values);
     lily_u16_write_1(emit->code, opcode);
 
     if (opcode == o_build_hash)
@@ -1748,7 +1741,7 @@ static void write_build_op(lily_emit_state *emit, int opcode,
 
     lily_u16_write_1(emit->code, num_values);
 
-    for (i = 0, arg = first_arg; arg != NULL; arg = arg->next_arg, i++)
+    for (arg = first_arg; arg != NULL; arg = arg->next_arg)
         lily_u16_write_1(emit->code, arg->result->reg_spot);
 
     lily_u16_write_2(emit->code, s->reg_spot, line_num);
@@ -1762,16 +1755,16 @@ static void ensure_valid_scope(lily_emit_state *emit, lily_ast *ast)
     lily_named_sym *sym = (lily_named_sym *)ast->sym;
 
     if (sym->flags & (SYM_SCOPE_PRIVATE | SYM_SCOPE_PROTECTED)) {
-        lily_class *block_class = emit->block->class_entry;
+        lily_class *block_cls = emit->block->class_entry;
 
         /* Vars and properties have this at the same offset. */
         lily_class *parent = sym->parent;
         int is_private = (sym->flags & SYM_SCOPE_PRIVATE);
         char *name = sym->name;
 
-        if ((is_private && block_class != parent) ||
+        if ((is_private && block_cls != parent) ||
             (is_private == 0 &&
-             (block_class == NULL || lily_class_greater_eq(parent, block_class) == 0))) {
+             (block_cls == NULL || lily_class_greater_eq(parent, block_cls) == 0))) {
             char *scope_name = is_private ? "private" : "protected";
             lily_raise_tree(emit->raiser, ast,
                        "%s.%s is marked %s, and not available here.",
@@ -1794,15 +1787,22 @@ static int can_optimize_out_assignment(lily_ast *ast)
     if (right_tree->tree_type == tree_local_var)
         /* Can't skip basic assignments. */
         ;
-    else if (right_tree->tree_type == tree_binary &&
-             (right_tree->op == tk_logical_and ||
-              right_tree->op == tk_logical_or))
-        /* These operations do two different writes. */
-        ;
-    else if (right_tree->tree_type == tree_binary &&
-             IS_ASSIGN_TOKEN(right_tree->op))
-        /* Compound ops (+= and the like) can't be skipped. */
-        ;
+    else if (right_tree->tree_type == tree_binary) {
+        uint8_t op = ast->op;
+
+        if (IS_ASSIGN_TOKEN(op))
+            ;
+        else if (op == tk_logical_and ||
+                 op == tk_logical_or ||
+                 op == tk_eq_eq ||
+                 op == tk_not_eq ||
+                 IS_COMPARE_TOKEN(op))
+            /* These finish by writing a jump table and two writes. They can't
+               be optimized because the optimize only covers one write. */
+            ;
+        else
+            can_optimize = 1;
+    }
     else
         can_optimize = 1;
 
@@ -1870,7 +1870,7 @@ static void add_call_name_to_msgbuf(lily_emit_state *emit, lily_msgbuf *msgbuf,
         lily_var *v = (lily_var *)item;
 
         if (v->flags & VAR_IS_READONLY) {
-            lily_value *val = lily_vs_nth(emit->symtab->literals, v->reg_spot);
+            lily_value *val = lily_literal_at(emit->symtab, v->reg_spot);
             lily_proto *p = val->value.function->proto;
             lily_mb_add(msgbuf, p->name);
         }
@@ -1928,25 +1928,14 @@ static void error_bad_arg(lily_emit_state *emit, lily_ast *ast,
 /* This is called when the tree given doesn't have enough arguments.
    ast:   The tree receiving the call.
    count: The real # of arguments that 'ast' was given.
-   min:   The minimum number allowed.
-          -1 is a special case that prints 'none' for empty variants.
-   max:   The maximum allowed.
-          -1 is a special case for varargs, denoting infinity.
+   min:   The minimum number allowed (lower than max in case of optargs).
+   max:   The maximum allowed (UINT16_MAX in case of varargs).
 
    This is typically called automatically by argument handling if the count is
-   wrong. If some other function is to call it, then that function must set
-   ast->keep_first_call_arg appropriately. */
+   wrong. */
 static void error_argument_count(lily_emit_state *emit, lily_ast *ast,
-        int count, int min, int max)
+        uint16_t count, uint16_t min, uint16_t max)
 {
-    /* Don't count the implicit self that these functions receive. */
-    if (ast->keep_first_call_arg) {
-        min--;
-        count--;
-        if (max != -1)
-            max--;
-    }
-
     /* This prints out the number sent, as well as the range of valid counts.
        There are four possibilities, with the last one being exclusively for
        a variant that requires arguments.
@@ -1957,16 +1946,17 @@ static void error_argument_count(lily_emit_state *emit, lily_ast *ast,
     const char *div_str = "";
     char arg_str[8], min_str[8] = "", max_str[8] = "";
 
-    if (count == -1)
-        strncpy(arg_str, "none", sizeof(arg_str));
-    else
+    if (count != 0 ||
+        ast->tree_type != tree_variant)
         snprintf(arg_str, sizeof(arg_str), "%d", count);
+    else
+        strncpy(arg_str, "none", sizeof(arg_str));
 
     snprintf(min_str, sizeof(min_str), "%d", min);
 
     if (min == max)
         div_str = "";
-    else if (max == -1)
+    else if (max == UINT16_MAX)
         div_str = "+";
     else {
         div_str = "..";
@@ -2038,55 +2028,39 @@ static void error_keyarg_before_posarg(lily_emit_state *emit, lily_ast *arg)
 static void error_keyarg_missing_params(lily_emit_state *emit, lily_ast *ast,
         lily_type *call_type, char **keywords)
 {
+    uint16_t i;
+    uint16_t stop = call_type->subtype_count - 1;
+    lily_ast *arg_iter = ast->arg_start;
     lily_msgbuf *msgbuf = emit->raiser->aux_msgbuf;
-    lily_mb_flush(msgbuf);
+    lily_type **arg_types = call_type->subtypes;
 
+    lily_mb_flush(msgbuf);
     lily_mb_add(msgbuf, "Call to ");
     add_call_name_to_msgbuf(emit, msgbuf, ast);
     lily_mb_add(msgbuf, " is missing parameters:");
 
-    lily_ast *arg_iter = ast->arg_start;
-    lily_type **arg_types = call_type->subtypes;
-    int i = 0, stop = call_type->subtype_count - 1;
-
     if (call_type->flags & TYPE_IS_VARARGS)
         stop--;
 
-    for (arg_iter = ast->arg_start;
-         i != stop;
-         arg_iter = arg_iter->next_arg) {
-        if (arg_iter->keyword_arg_pos != i) {
-            int cycle_end = arg_iter->keyword_arg_pos;
-            int skip = stop + 1;
-
-            if (arg_iter->next_arg == NULL) {
-                cycle_end = stop;
-                skip = arg_iter->keyword_arg_pos;
-            }
-
-            while (i != cycle_end) {
-                if (i == skip) {
-                    i++;
-                    continue;
-                }
-
-                char *key = keywords[i];
-
-                i++;
-
-                lily_type *t = arg_types[i];
-
-                if (t->cls->id == LILY_ID_OPTARG)
-                    continue;
-
-                if (key[0] != '\0')
-                    lily_mb_add_fmt(msgbuf,
-                            "\n* Parameter #%d (:%s) of type ^T.", i, key, t);
-                else
-                    lily_mb_add_fmt(msgbuf, "\n* Parameter #%d of type ^T.", i,
-                            t);
-            }
+    for (i = 0;i != stop;i++) {
+        if (arg_iter &&
+            arg_iter->keyword_arg_pos == i) {
+            arg_iter = arg_iter->next_arg;
+            continue;
         }
+
+        lily_type *t = arg_types[i + 1];
+
+        if (t->cls->id == LILY_ID_OPTARG)
+            continue;
+
+        char *key = keywords[i];
+
+        if (key[0] != '\0')
+            lily_mb_add_fmt(msgbuf, "\n* Parameter #%d (:%s) of type ^T.",
+                    i + 1, key, t);
+        else
+            lily_mb_add_fmt(msgbuf, "\n* Parameter #%d of type ^T.", i + 1, t);
     }
 
     lily_raise_tree(emit->raiser, ast, lily_mb_raw(msgbuf));
@@ -2210,123 +2184,198 @@ static void eval_oo_access(lily_emit_state *emit, lily_ast *ast)
  */
 
 /** Here are most of the functions related to evaluating trees. **/
+static void eval_assign(lily_emit_state *, lily_ast *);
+static void eval_func_pipe(lily_emit_state *, lily_ast *, lily_type *);
+static void eval_logical_op(lily_emit_state *, lily_ast *);
+static void eval_plus_plus(lily_emit_state *, lily_ast *);
 
-/* This handles simple binary ops (no assign, &&/||, |>, or compounds. This
-   assumes that both sides have already been evaluated. */
-static void emit_binary_op(lily_emit_state *emit, lily_ast *ast)
+static void eval_compare_op(lily_emit_state *emit, lily_ast *ast, int fold)
 {
-    lily_sym *lhs_sym = ast->left->result;
-    lily_sym *rhs_sym = ast->right->result;
-    lily_class *lhs_class = lhs_sym->type->cls;
-    lily_class *rhs_class = rhs_sym->type->cls;
-    int opcode = -1;
-    lily_storage *s;
+    if (ast->left->tree_type != tree_local_var)
+        eval_tree(emit, ast->left, NULL);
 
-    if (lhs_sym->type == rhs_sym->type) {
-        int lhs_id = lhs_class->id;
-        int op = ast->op;
+    if (ast->right->tree_type != tree_local_var)
+        eval_tree(emit, ast->right, ast->left->result->type);
 
-        if (lhs_id == LILY_ID_INTEGER) {
-            if (op == tk_plus)
-                opcode = o_int_add;
-            else if (op == tk_minus)
-                opcode = o_int_minus;
-            else if (op == tk_multiply)
-                opcode = o_int_multiply;
-            else if (op == tk_divide)
-                opcode = o_int_divide;
-            else if (op == tk_modulo)
-                opcode = o_int_modulo;
-            else if (op == tk_left_shift)
-                opcode = o_int_left_shift;
-            else if (op == tk_right_shift)
-                opcode = o_int_right_shift;
-            else if (op == tk_bitwise_and)
-                opcode = o_int_bitwise_and;
-            else if (op == tk_bitwise_or)
-                opcode = o_int_bitwise_or;
-            else if (op == tk_bitwise_xor)
-                opcode = o_int_bitwise_xor;
+    lily_sym *left = ast->left->result;
+    lily_sym *right = ast->right->result;
+    uint16_t left_id = left->type->cls->id;
+    uint16_t op = ast->op;
+    uint16_t opcode = UINT16_MAX;
+
+    if (op == tk_eq_eq)
+        opcode = o_compare_eq;
+    else if (op == tk_not_eq)
+        opcode = o_compare_not_eq;
+    else if (left_id == LILY_ID_BYTE ||
+             left_id == LILY_ID_DOUBLE ||
+             left_id == LILY_ID_INTEGER ||
+             left_id == LILY_ID_STRING) {
+        if (op == tk_lt_eq) {
+            lily_sym *temp = right;
+            right = left;
+            left = temp;
+            opcode = o_compare_greater_eq;
         }
-        else if (lhs_id == LILY_ID_DOUBLE) {
-            if (op == tk_plus)
-                opcode = o_number_add;
-            else if (op == tk_minus)
-                opcode = o_number_minus;
-            else if (op == tk_multiply)
-                opcode = o_number_multiply;
-            else if (op == tk_divide)
-                opcode = o_number_divide;
+        else if (op == tk_lt) {
+            lily_sym *temp = right;
+            right = left;
+            left = temp;
+            opcode = o_compare_greater;
         }
-
-        if (lhs_id == LILY_ID_INTEGER ||
-            lhs_id == LILY_ID_BYTE ||
-            lhs_id == LILY_ID_DOUBLE ||
-            lhs_id == LILY_ID_STRING) {
-            if (op == tk_lt_eq) {
-                lily_sym *temp = rhs_sym;
-                rhs_sym = lhs_sym;
-                lhs_sym = temp;
-                opcode = o_compare_greater_eq;
-            }
-            else if (op == tk_lt) {
-                lily_sym *temp = rhs_sym;
-                rhs_sym = lhs_sym;
-                lhs_sym = temp;
-                opcode = o_compare_greater;
-            }
-            else if (op == tk_gt_eq)
-                opcode = o_compare_greater_eq;
-            else if (op == tk_gt)
-                opcode = o_compare_greater;
-        }
-
-        if (op == tk_eq_eq)
-            opcode = o_compare_eq;
-        else if (op == tk_not_eq)
-            opcode = o_compare_not_eq;
+        else if (op == tk_gt_eq)
+            opcode = o_compare_greater_eq;
+        else if (op == tk_gt)
+            opcode = o_compare_greater;
     }
 
-    if (opcode == -1)
-        lily_raise_tree(emit->raiser, ast,
-                   "Invalid operation: ^T %s ^T.", ast->left->result->type,
-                   tokname(ast->op), ast->right->result->type);
+    if (opcode == UINT16_MAX || left->type != right->type)
+        lily_raise_tree(emit->raiser, ast, "Invalid operation: ^T %s ^T.",
+                left->type, tokname(op), right->type);
 
-    lily_class *storage_class;
-    switch (ast->op) {
+    /* Comparison ops include a jump to take if they fail. In many cases,
+       comparisons are done as part of a conditional test. Putting a jump in the
+       compare allows omitting a separate o_jump_if_false op. */
+    lily_u16_write_5(emit->code, opcode, left->reg_spot, right->reg_spot, 3,
+            ast->line_num);
+
+    if (fold) {
+        /* This tree is the root of a comparison. Add the falsey jump to patches
+           to get patched so the comparison doesn't have to write a jump. */
+        lily_u16_write_1(emit->patches, lily_u16_pos(emit->code) - 2);
+        return;
+    }
+
+    uint16_t patch = lily_u16_pos(emit->code) - 2;
+    lily_storage *s = get_storage(emit, emit->symtab->boolean_class->self_type);
+
+    /* On success, load 'true' and jump over the false section. */
+    lily_u16_write_4(emit->code, o_load_boolean, 1, s->reg_spot, ast->line_num);
+    lily_u16_write_2(emit->code, o_jump, 1);
+
+    /* The false path starts here. +3 because the jump is 3 away from the op. */
+    lily_u16_set_at(emit->code, patch, lily_u16_pos(emit->code) - patch + 3);
+
+    patch = lily_u16_pos(emit->code) - 1;
+    lily_u16_write_4(emit->code, o_load_boolean, 0, s->reg_spot, ast->line_num);
+
+    /* Patch the success path to jump here, after the false path. */
+    lily_u16_set_at(emit->code, patch, lily_u16_pos(emit->code) - patch + 1);
+
+    ast->result = (lily_sym *)s;
+}
+
+static void eval_arith_op(lily_emit_state *emit, lily_ast *ast)
+{
+    lily_sym *left = ast->left->result;
+    lily_sym *right = ast->right->result;
+    uint16_t left_id = left->type->cls->id;
+    uint16_t op = ast->op;
+    uint16_t opcode = UINT16_MAX;
+    lily_storage *s;
+
+    if (left->type != right->type)
+        op = UINT16_MAX;
+
+    if (left_id == LILY_ID_INTEGER) {
+        if (op == tk_plus)
+            opcode = o_int_add;
+        else if (op == tk_minus)
+            opcode = o_int_minus;
+        else if (op == tk_multiply)
+            opcode = o_int_multiply;
+        else if (op == tk_divide)
+            opcode = o_int_divide;
+        else if (op == tk_modulo)
+            opcode = o_int_modulo;
+        else if (op == tk_left_shift)
+            opcode = o_int_left_shift;
+        else if (op == tk_right_shift)
+            opcode = o_int_right_shift;
+        else if (op == tk_bitwise_and)
+            opcode = o_int_bitwise_and;
+        else if (op == tk_bitwise_or)
+            opcode = o_int_bitwise_or;
+        else if (op == tk_bitwise_xor)
+            opcode = o_int_bitwise_xor;
+    }
+    else if (left_id == LILY_ID_DOUBLE) {
+        if (op == tk_plus)
+            opcode = o_number_add;
+        else if (op == tk_minus)
+            opcode = o_number_minus;
+        else if (op == tk_multiply)
+            opcode = o_number_multiply;
+        else if (op == tk_divide)
+            opcode = o_number_divide;
+    }
+
+    if (opcode == UINT16_MAX)
+        lily_raise_tree(emit->raiser, ast, "Invalid operation: ^T %s ^T.",
+                left->type, tokname(op), right->type);
+
+    lily_type *storage_type;
+
+    switch (op) {
         case tk_plus:
         case tk_minus:
         case tk_multiply:
         case tk_divide:
-            storage_class = lhs_sym->type->cls;
-            break;
-        case tk_eq_eq:
-        case tk_lt:
-        case tk_lt_eq:
-        case tk_gt:
-        case tk_gt_eq:
-        case tk_not_eq:
-            storage_class = emit->symtab->boolean_class;
+            storage_type = left->type;
             break;
         default:
-            storage_class = emit->symtab->integer_class;
+            storage_type = emit->symtab->integer_class->self_type;
     }
 
-    /* Can we reuse a storage instead of making a new one? It's a simple check,
-       but every register the vm doesn't need to make helps. */
-    if (lhs_sym->item_kind == ITEM_STORAGE &&
-        lhs_class == storage_class)
-        s = (lily_storage *)lhs_sym;
-    else if (rhs_sym->item_kind == ITEM_STORAGE &&
-             rhs_class == storage_class)
-        s = (lily_storage *)rhs_sym;
+    /* Try to use an existing storage again before getting a new one. */
+    if (left->item_kind == ITEM_STORAGE &&
+        left->type == storage_type)
+        s = (lily_storage *)left;
+    else if (right->item_kind == ITEM_STORAGE &&
+             right->type == storage_type)
+        s = (lily_storage *)right;
     else
-        s = get_storage(emit, storage_class->self_type);
+        s = get_storage(emit, storage_type);
 
-    lily_u16_write_5(emit->code, opcode, lhs_sym->reg_spot, rhs_sym->reg_spot,
+    lily_u16_write_5(emit->code, opcode, left->reg_spot, right->reg_spot,
             s->reg_spot, ast->line_num);
-
     ast->result = (lily_sym *)s;
+}
+
+static void eval_binary_op(lily_emit_state *emit, lily_ast *ast,
+        lily_type *expect)
+{
+    uint8_t prio = lily_priority_for_token(ast->op);
+
+    /* See `scripts/token.lily` for priority groups. */
+
+    switch (prio) {
+        case 1:
+            eval_assign(emit, ast);
+            break;
+        case 2:
+        case 3:
+            eval_logical_op(emit, ast);
+            break;
+        case 4:
+            eval_compare_op(emit, ast, 0);
+            break;
+        case 5:
+            eval_plus_plus(emit, ast);
+            break;
+        case 6:
+            eval_func_pipe(emit, ast, expect);
+            break;
+        default:
+            if (ast->left->tree_type != tree_local_var)
+                eval_tree(emit, ast->left, NULL);
+
+            if (ast->right->tree_type != tree_local_var)
+                eval_tree(emit, ast->right, ast->left->result->type);
+
+            eval_arith_op(emit, ast);
+            break;
+    }
 }
 
 /* This takes a tree and will change the op from an 'X Y= Z' to 'X Y Z'. The
@@ -2414,7 +2463,7 @@ static void emit_compound_op(lily_emit_state *emit, lily_ast *ast)
     lily_token save_op = ast->op;
 
     set_compound_spoof_op(emit, ast);
-    emit_binary_op(emit, ast);
+    eval_arith_op(emit, ast);
     ast->op = save_op;
 }
 
@@ -2467,7 +2516,7 @@ static void eval_assign_upvalue(lily_emit_state *emit, lily_ast *ast)
     lily_var *left_var = (lily_var *)ast->left->sym;
     uint16_t spot = left_var->closure_spot;
 
-    if (spot == (uint16_t)-1)
+    if (spot == UINT16_MAX)
         spot = checked_close_over_var(emit, left_var);
 }
 
@@ -2670,14 +2719,8 @@ static void eval_lambda(lily_emit_state *emit, lily_ast *ast,
     int save_expr_num = emit->expr_num;
     char *lambda_body = lily_sp_get(emit->expr_strings, ast->pile_pos);
 
-    if (expect) {
-        if (expect->cls->id != LILY_ID_FUNCTION)
-            expect = NULL;
-        else if (expect->subtypes[0]->cls == lily_self_class) {
-            lily_raise_tree(emit->raiser, ast,
-                    "Lambdas cannot return the self type (not a class method).");
-        }
-    }
+    if (expect && expect->cls->id != LILY_ID_FUNCTION)
+        expect = NULL;
 
     lily_sym *lambda_result = (lily_sym *)lily_parser_lambda_eval(emit->parser,
             ast->line_num, lambda_body, expect);
@@ -2700,9 +2743,9 @@ static void eval_lambda(lily_emit_state *emit, lily_ast *ast,
 /* This takes care of binary || and &&. */
 static void eval_logical_op(lily_emit_state *emit, lily_ast *ast)
 {
+    uint16_t jump_on = (ast->op == tk_logical_or);
     lily_storage *result;
-    int andor_start;
-    int jump_on = (ast->op == tk_logical_or);
+    uint16_t andor_start;
 
     /* The top-most and/or will start writing patches, and then later write down
        all of those patches. This is okay to do, because the current block
@@ -2711,7 +2754,7 @@ static void eval_logical_op(lily_emit_state *emit, lily_ast *ast)
         (ast->parent->tree_type != tree_binary || ast->parent->op != ast->op))
         andor_start = lily_u16_pos(emit->patches);
     else
-        andor_start = -1;
+        andor_start = UINT16_MAX;
 
     if (ast->left->tree_type != tree_local_var)
         eval_tree(emit, ast->left, NULL);
@@ -2727,14 +2770,12 @@ static void eval_logical_op(lily_emit_state *emit, lily_ast *ast)
 
     emit_jump_if(emit, ast->right, jump_on);
 
-    if (andor_start != -1) {
-        int save_pos;
+    if (andor_start != UINT16_MAX) {
         lily_symtab *symtab = emit->symtab;
+        uint16_t truthy = (ast->op == tk_logical_and);
+        uint16_t save_pos;
 
         result = get_storage(emit, symtab->boolean_class->self_type);
-
-        int truthy = (ast->op == tk_logical_and);
-
         lily_u16_write_4(emit->code, o_load_boolean, truthy, result->reg_spot,
                 ast->line_num);
 
@@ -2759,8 +2800,7 @@ static void eval_logical_op(lily_emit_state *emit, lily_ast *ast)
 }
 
 /* This runs a subscript, including validation of the indexes. */
-static void eval_subscript(lily_emit_state *emit, lily_ast *ast,
-        lily_type *expect)
+static void eval_subscript(lily_emit_state *emit, lily_ast *ast)
 {
     lily_ast *var_ast = ast->arg_start;
     lily_ast *index_ast = var_ast->next_arg;
@@ -2919,7 +2959,7 @@ static void emit_nonlocal_var(lily_emit_state *emit, lily_ast *ast)
             lily_var *v = (lily_var *)sym;
 
             spot = v->closure_spot;
-            if (spot == (uint16_t)-1)
+            if (spot == UINT16_MAX)
                 spot = checked_close_over_var(emit, v);
 
             emit->scope_block->flags |= BLOCK_MAKE_CLOSURE;
@@ -3236,14 +3276,13 @@ static void eval_build_list(lily_emit_state *emit, lily_ast *ast,
       function.
     **/
 
-static void get_func_min_max(lily_type *call_type, unsigned int *min,
-        unsigned int *max)
+static void get_func_min_max(lily_type *call_type, uint16_t *min, uint16_t *max)
 {
     *min = call_type->subtype_count - 1;
     *max = *min;
 
     if (call_type->flags & TYPE_HAS_OPTARGS) {
-        int i;
+        uint16_t i;
         for (i = 1;i < call_type->subtype_count;i++) {
             if (call_type->subtypes[i]->cls->id == LILY_ID_OPTARG)
                 break;
@@ -3252,7 +3291,7 @@ static void get_func_min_max(lily_type *call_type, unsigned int *min,
     }
 
     if (call_type->flags & TYPE_IS_VARARGS) {
-        *max = (unsigned int)-1;
+        *max = UINT16_MAX;
 
         if ((call_type->flags & TYPE_HAS_OPTARGS) == 0)
             *min = *min - 1;
@@ -3295,10 +3334,10 @@ static void setup_call_result(lily_emit_state *emit, lily_ast *ast,
 /* The call's subtrees have been evaluated now. Write the instruction to do the
    call and make a storage to put the result in (if needed). */
 static void write_call(lily_emit_state *emit, lily_ast *ast,
-        int argument_count, lily_storage *vararg_s)
+        uint16_t argument_count, lily_storage *vararg_s)
 {
     lily_ast *arg = ast->arg_start;
-    int i = 0;
+    uint16_t i = 0;
 
     lily_u16_write_3(emit->code, ast->call_op, ast->call_source_reg,
             argument_count + (vararg_s != NULL));
@@ -3318,7 +3357,7 @@ static void write_call(lily_emit_state *emit, lily_ast *ast,
    intersect. This is different (and more difficult) because of potential unset
    values between arguments given. */
 static void write_call_keyopt(lily_emit_state *emit, lily_ast *ast,
-        lily_type *call_type, int argument_count, lily_storage *vararg_s)
+        lily_type *call_type, lily_storage *vararg_s)
 {
     lily_storage *s = get_storage(emit, lily_unset_type);
 
@@ -3340,7 +3379,7 @@ static void write_call_keyopt(lily_emit_state *emit, lily_ast *ast,
     if (call_type->flags & TYPE_IS_VARARGS)
         va_pos = call_type->subtype_count - 2;
     else
-        va_pos = (uint16_t)-1;
+        va_pos = UINT16_MAX;
 
     while (1) {
         if (pos != args_written) {
@@ -3365,7 +3404,7 @@ static void write_call_keyopt(lily_emit_state *emit, lily_ast *ast,
 
             if (arg)
                 pos = arg->keyword_arg_pos;
-            else if (va_pos != (uint16_t)-1 && vararg_s != NULL)
+            else if (va_pos != UINT16_MAX && vararg_s != NULL)
                 /* vararg_s may be NULL if the function is varargs but no
                    varargs were actually passed. */
                 pos = va_pos;
@@ -3447,12 +3486,11 @@ static int eval_call_arg(lily_emit_state *emit, lily_ast *arg,
 /* This is the main body of argument handling. This begins after ts has had
    generics set aside for this function. This function verifies the argument
    count, sets the result up, and does the call to write values out. */
-static void run_call(lily_emit_state *emit, lily_ast *ast,
-        lily_type *call_type, lily_type *expect)
+static void run_call(lily_emit_state *emit, lily_ast *ast, lily_type *call_type)
 {
     lily_ast *arg = ast->arg_start;
-    int num_args = ast->args_collected;
-    unsigned int min, max;
+    uint16_t num_args = ast->args_collected;
+    uint16_t min, max;
 
     get_func_min_max(call_type, &min, &max);
 
@@ -3460,15 +3498,14 @@ static void run_call(lily_emit_state *emit, lily_ast *ast,
         error_argument_count(emit, ast, num_args, min, max);
 
     lily_type **arg_types = call_type->subtypes;
+    uint16_t i, stop;
 
-    int stop;
     if ((call_type->flags & TYPE_IS_VARARGS) == 0 ||
         call_type->subtype_count - 1 > num_args)
         stop = num_args;
     else
         stop = call_type->subtype_count - 2;
 
-    int i;
     for (i = 0; i < stop; i++, arg = arg->next_arg) {
         if (eval_call_arg(emit, arg, arg_types[i + 1]) == 0)
             error_bad_arg(emit, ast, call_type, i, arg->result->type);
@@ -3526,118 +3563,135 @@ static void run_call(lily_emit_state *emit, lily_ast *ast,
     write_call(emit, ast, stop, vararg_s);
 }
 
-/* This is the first step to running a call. The 'ast' passed should be the
-   tree that is to be called. 'expect' is the type that 'ast' is expected to
-   output (used for inference).
-   This function adjusts the calling tree to hold the opcode and target that
-   call writing will use later on. It also sets '*call_type' to the type that
-   will be used to verify the call. Finally, it ensures that the type set to
-   '*call_type' is a `Function` (raising a syntax error otherwise). */
-static void begin_call(lily_emit_state *emit, lily_ast *ast,
-        lily_type *expect, lily_type **call_type)
+static void init_call_state(lily_emit_state *emit, lily_ast *ast)
 {
+    lily_item *call_item;
     lily_ast *first_arg = ast->arg_start;
-    lily_tree_type first_tt = first_arg->tree_type;
-    lily_sym *call_sym = NULL;
-    uint16_t call_source_reg = (uint16_t)-1;
-    uint16_t call_op = (uint8_t)-1;
 
-    ast->first_tree_type = first_arg->tree_type;
-    ast->keep_first_call_arg = 0;
-
-    switch (first_tt) {
+    switch (first_arg->tree_type) {
         case tree_method:
             ensure_valid_scope(emit, first_arg);
-            call_sym = first_arg->sym;
-
-            ast->keep_first_call_arg = 1;
-            first_arg->tree_type = tree_self;
-            break;
-        case tree_defined_func:
-        case tree_inherited_new:
-            call_sym = first_arg->sym;
-            if (call_sym->flags & VAR_NEEDS_CLOSURE) {
-                lily_storage *s = get_storage(emit, first_arg->sym->type);
-                emit_create_function(emit, first_arg->sym, s);
-                call_source_reg = s->reg_spot;
-                call_op = o_call_register;
-            }
+            first_arg->result = (lily_sym *)emit->scope_block->self;
+            first_arg->tree_type = tree_cached;
+            call_item = first_arg->item;
             break;
         case tree_static_func:
             ensure_valid_scope(emit, first_arg);
-            call_sym = first_arg->sym;
+            call_item = first_arg->item;
             break;
         case tree_oo_access:
             eval_oo_access_for_item(emit, first_arg);
-            if (first_arg->item->item_kind == ITEM_PROPERTY) {
+            if (first_arg->item->item_kind == ITEM_PROPERTY)
                 oo_property_read(emit, first_arg);
-                call_sym = (lily_sym *)first_arg->sym;
-                call_source_reg = first_arg->result->reg_spot;
-                call_op = o_call_register;
-            }
             else {
-                ast->keep_first_call_arg = 1;
-                call_sym = first_arg->sym;
-                /* Rewrite the tree so it isn't evaluated twice. */
-                first_arg->tree_type = tree_oo_cached;
+                first_arg->result = first_arg->arg_start->result;
+                first_arg->tree_type = tree_cached;
             }
+
+            call_item = first_arg->item;
             break;
         case tree_variant: {
             lily_variant_class *variant = first_arg->variant;
             if (variant->item_kind == ITEM_VARIANT_EMPTY)
-                lily_raise_syn(emit->raiser, "Variant %s should not get args.",
+                lily_raise_syn(emit->raiser,
+                        "%s is an empty variant that should not be called.",
                         variant->name);
 
-            ast->variant = variant;
-            *call_type = variant->build_type;
-            call_op = o_build_variant;
-            call_source_reg = variant->cls_id;
+            call_item = (lily_item *)variant;
             break;
         }
         case tree_global_var:
         case tree_upvalue:
             eval_tree(emit, first_arg, NULL);
-            call_sym = (lily_sym *)first_arg->sym;
-            call_source_reg = first_arg->result->reg_spot;
-            call_op = o_call_register;
+        case tree_local_var:
+        case tree_defined_func:
+        case tree_inherited_new:
+            call_item = first_arg->item;
             break;
         default:
             eval_tree(emit, first_arg, NULL);
-            call_sym = (lily_sym *)first_arg->result;
+            call_item = (lily_item *)first_arg->result;
             break;
     }
 
-    if (call_sym) {
-        if (call_source_reg == (uint16_t)-1)
-            call_source_reg = call_sym->reg_spot;
+    ast->item = call_item;
+}
 
-        if (call_op == (uint8_t)-1) {
-            if (call_sym->flags & VAR_IS_READONLY) {
-                if (call_sym->flags & VAR_IS_FOREIGN_FUNC)
-                    call_op = o_call_foreign;
-                else
-                    call_op = o_call_native;
+static lily_type *start_call(lily_emit_state *emit, lily_ast *ast)
+{
+    uint16_t call_source_reg;
+    lily_type *call_type;
+    uint16_t call_op = o_call_register;
+    lily_item *call_item = ast->item;
+    lily_ast *first_arg = ast->arg_start;
+
+    switch (call_item->item_kind) {
+        case ITEM_VAR: {
+            lily_var *v = (lily_var *)call_item;
+
+            if (v->flags & VAR_NEEDS_CLOSURE) {
+                lily_storage *s = get_storage(emit, v->type);
+
+                emit_create_function(emit, (lily_sym *)v, s);
+                call_source_reg = s->reg_spot;
+            }
+            else if (call_item->flags & VAR_IS_FOREIGN_FUNC) {
+                call_op = o_call_foreign;
+                call_source_reg = v->reg_spot;
+            }
+            else if (call_item->flags & VAR_IS_READONLY) {
+                call_op = o_call_native;
+                call_source_reg = v->reg_spot;
             }
             else
-                call_op = o_call_register;
+                call_source_reg = first_arg->result->reg_spot;
+
+            ast->sym = (lily_sym *)v;
+            call_type = v->type;
+            break;
         }
+        case ITEM_VARIANT_FILLED: {
+            lily_variant_class *variant = (lily_variant_class *)call_item;
 
-        ast->sym = call_sym;
-        *call_type = call_sym->type;
+            ast->variant = variant;
+            call_op = o_build_variant;
+            call_source_reg = variant->cls_id;
+            call_type = variant->build_type;
+            break;
+        }
+        case ITEM_PROPERTY:
+            ast->sym = first_arg->sym;
+            call_source_reg = first_arg->result->reg_spot;
+            call_type = first_arg->result->type;
+            break;
+        case ITEM_STORAGE:
+        default: {
+            lily_storage *s = (lily_storage *)call_item;
 
-        if (call_sym->type->cls->id != LILY_ID_FUNCTION)
-            lily_raise_tree(emit->raiser, ast,
-                    "Cannot anonymously call resulting type '^T'.",
-                    call_sym->type);
+            ast->sym = (lily_sym *)first_arg->result;
+            call_source_reg = first_arg->result->reg_spot;
+            call_type = s->type;
+            break;
+        }
     }
 
-    if (ast->keep_first_call_arg == 0) {
-        ast->arg_start = ast->arg_start->next_arg;
-        ast->args_collected--;
+    if (call_type->cls->id != LILY_ID_FUNCTION &&
+        (call_item->flags & ITEM_IS_VARIANT) == 0) {
+        lily_raise_tree(emit->raiser, ast,
+                "Cannot anonymously call resulting type '^T'.",
+                call_type);
     }
 
     ast->call_source_reg = call_source_reg;
     ast->call_op = call_op;
+    ast->first_tree_type = first_arg->tree_type;
+
+    if (first_arg->tree_type != tree_cached) {
+        ast->arg_start = ast->arg_start->next_arg;
+        ast->args_collected--;
+    }
+
+    return call_type;
 }
 
 /* This is called when a call has a type that references generics in some way.
@@ -3698,10 +3752,12 @@ static void setup_typing_for_call(lily_emit_state *emit, lily_ast *ast,
    the 'ast' given will have a result set and code written. */
 static void eval_call(lily_emit_state *emit, lily_ast *ast, lily_type *expect)
 {
-    lily_type *call_type = NULL;
-    begin_call(emit, ast, expect, &call_type);
-
     lily_ts_save_point p;
+
+    init_call_state(emit, ast);
+
+    lily_type *call_type = start_call(emit, ast);
+
     /* Scope save MUST happen after the call is started, because evaluating the
        call may trigger a dynaload. That dynaload may then cause the number of
        generics to be seen to increase. But since the scope was registered
@@ -3712,19 +3768,19 @@ static void eval_call(lily_emit_state *emit, lily_ast *ast, lily_type *expect)
     if (call_type->flags & TYPE_IS_UNRESOLVED)
         setup_typing_for_call(emit, ast, expect, call_type);
 
-    run_call(emit, ast, call_type, expect);
+    run_call(emit, ast, call_type);
     lily_ts_scope_restore(emit->ts, &p);
 }
 
-static int keyarg_to_pos(char **keywords, const char *to_find)
+static uint16_t keyarg_to_pos(char **keywords, const char *to_find)
 {
-    int i = 0;
+    uint16_t i = 0;
 
     while (1) {
         char *key = keywords[i];
 
         if (key == NULL) {
-            i = -1;
+            i = UINT16_MAX;
             break;
         }
 
@@ -3822,7 +3878,9 @@ static void keyargs_mark_and_verify(lily_emit_state *emit, lily_ast *ast,
         lily_type *call_type)
 {
     lily_ast *arg = ast->arg_start;
-    int num_args = ast->args_collected, have_keyargs = 0, va_pos = INT_MAX;
+    uint16_t num_args = ast->args_collected;
+    uint16_t va_pos = UINT16_MAX;
+    int have_keyargs = 0;
     int i;
 
     if (call_type->flags & TYPE_IS_VARARGS)
@@ -3844,7 +3902,7 @@ static void keyargs_mark_and_verify(lily_emit_state *emit, lily_ast *ast,
 
             pos = keyarg_to_pos(keywords, key_name);
 
-            if (pos == -1)
+            if (pos == UINT16_MAX)
                 error_keyarg_not_valid(emit, ast, arg);
 
             if (va_pos <= pos)
@@ -3864,7 +3922,7 @@ static void keyargs_mark_and_verify(lily_emit_state *emit, lily_ast *ast,
         arg->keyword_arg_pos = pos;
     }
 
-    unsigned int min, max;
+    uint16_t min, max;
 
     get_func_min_max(call_type, &min, &max);
 
@@ -3873,10 +3931,10 @@ static void keyargs_mark_and_verify(lily_emit_state *emit, lily_ast *ast,
 }
 
 static void run_named_call(lily_emit_state *emit, lily_ast *ast,
-        lily_type *call_type, lily_type *expect)
+        lily_type *call_type)
 {
-    int num_args = ast->args_collected;
-    unsigned int min, max;
+    uint16_t num_args = ast->args_collected;
+    uint16_t min, max;
 
     get_func_min_max(call_type, &min, &max);
 
@@ -3982,20 +4040,20 @@ static void run_named_call(lily_emit_state *emit, lily_ast *ast,
     if (va_pos != INT_MAX) {
         lily_type *va_type = call_type->subtypes[call_type->subtype_count - 1];
 
-        if (va_type->cls->id != LILY_ID_OPTARG ||
-            var_arg_head) {
-        lily_type *va_list_type = get_va_type(call_type);
+        if (var_arg_head ||
+            va_type->cls->id != LILY_ID_OPTARG) {
+            lily_type *va_list_type = get_va_type(call_type);
 
-        if (va_list_type->flags & TYPE_IS_UNRESOLVED)
-            va_list_type = lily_ts_resolve(emit->ts, va_list_type);
+            if (va_list_type->flags & TYPE_IS_UNRESOLVED)
+                va_list_type = lily_ts_resolve(emit->ts, va_list_type);
 
-        vararg_s = get_storage(emit, va_list_type);
-        lily_u16_write_2(emit->code, o_build_list, va_count);
+            vararg_s = get_storage(emit, va_list_type);
+            lily_u16_write_2(emit->code, o_build_list, va_count);
 
-        for (;var_arg_head;var_arg_head = var_arg_head->next_arg)
-            lily_u16_write_1(emit->code, var_arg_head->result->reg_spot);
+            for (;var_arg_head;var_arg_head = var_arg_head->next_arg)
+                lily_u16_write_1(emit->code, var_arg_head->result->reg_spot);
 
-        lily_u16_write_2(emit->code, vararg_s->reg_spot, ast->line_num);
+            lily_u16_write_2(emit->code, vararg_s->reg_spot, ast->line_num);
         }
     }
 
@@ -4005,16 +4063,18 @@ static void run_named_call(lily_emit_state *emit, lily_ast *ast,
     if ((call_type->flags & TYPE_HAS_OPTARGS) == 0)
         write_call(emit, ast, base_count, vararg_s);
     else
-        write_call_keyopt(emit, ast, call_type, base_count, vararg_s);
+        write_call_keyopt(emit, ast, call_type, vararg_s);
 }
 
 static void eval_named_call(lily_emit_state *emit, lily_ast *ast,
         lily_type *expect)
 {
-    lily_type *call_type = NULL;
-    begin_call(emit, ast, expect, &call_type);
-
     lily_ts_save_point p;
+
+    init_call_state(emit, ast);
+
+    lily_type *call_type = start_call(emit, ast);
+
     /* Scope save MUST happen after the call is started, because evaluating the
        call may trigger a dynaload. That dynaload may then cause the number of
        generics to be seen to increase. But since the scope was registered
@@ -4025,7 +4085,7 @@ static void eval_named_call(lily_emit_state *emit, lily_ast *ast,
     if (call_type->flags & TYPE_IS_UNRESOLVED)
         setup_typing_for_call(emit, ast, expect, call_type);
 
-    run_named_call(emit, ast, call_type, expect);
+    run_named_call(emit, ast, call_type);
     lily_ts_scope_restore(emit->ts, &p);
 }
 
@@ -4037,10 +4097,9 @@ static void eval_variant(lily_emit_state *emit, lily_ast *ast,
     lily_variant_class *variant = ast->variant;
     /* Did this need arguments? It was used incorrectly if so. */
     if (variant->item_kind == ITEM_VARIANT_FILLED) {
-        unsigned int min, max;
+        uint16_t min, max;
         get_func_min_max(variant->build_type, &min, &max);
-        ast->keep_first_call_arg = 0;
-        error_argument_count(emit, ast, -1, min, max);
+        error_argument_count(emit, ast, 0, min, max);
     }
 
     /* An empty variant's build type is the enum self type with any generics
@@ -4159,25 +4218,8 @@ static void eval_tree(lily_emit_state *emit, lily_ast *ast, lily_type *expect)
         emit_boolean(emit, ast);
     else if (ast->tree_type == tree_call)
         eval_call(emit, ast, expect);
-    else if (ast->tree_type == tree_binary) {
-        if (IS_ASSIGN_TOKEN(ast->op))
-            eval_assign(emit, ast);
-        else if (ast->op == tk_logical_or || ast->op == tk_logical_and)
-            eval_logical_op(emit, ast);
-        else if (ast->op == tk_func_pipe)
-            eval_func_pipe(emit, ast, expect);
-        else if (ast->op == tk_plus_plus)
-            eval_plus_plus(emit, ast);
-        else {
-            if (ast->left->tree_type != tree_local_var)
-                eval_tree(emit, ast->left, NULL);
-
-            if (ast->right->tree_type != tree_local_var)
-                eval_tree(emit, ast->right, ast->left->result->type);
-
-            emit_binary_op(emit, ast);
-        }
-    }
+    else if (ast->tree_type == tree_binary)
+        eval_binary_op(emit, ast, expect);
     else if (ast->tree_type == tree_parenth) {
         lily_ast *start = ast->arg_start;
 
@@ -4193,7 +4235,7 @@ static void eval_tree(lily_emit_state *emit, lily_ast *ast, lily_type *expect)
     else if (ast->tree_type == tree_tuple)
         eval_build_tuple(emit, ast, expect);
     else if (ast->tree_type == tree_subscript)
-        eval_subscript(emit, ast, expect);
+        eval_subscript(emit, ast);
     else if (ast->tree_type == tree_typecast)
         eval_typecast(emit, ast);
     else if (ast->tree_type == tree_oo_access)
@@ -4206,8 +4248,6 @@ static void eval_tree(lily_emit_state *emit, lily_ast *ast, lily_type *expect)
         eval_lambda(emit, ast, expect);
     else if (ast->tree_type == tree_self)
         eval_self(emit, ast);
-    else if (ast->tree_type == tree_oo_cached)
-        ast->result = ast->arg_start->result;
     else if (ast->tree_type == tree_named_call)
         eval_named_call(emit, ast, expect);
 }
@@ -4283,6 +4323,17 @@ static int is_false_tree(lily_ast *ast)
     return result;
 }
 
+static int is_compare_tree(lily_ast *ast)
+{
+    int result = 0;
+
+    if (ast->tree_type == tree_binary &&
+        IS_COMPARE_TOKEN(ast->op))
+        result = 1;
+
+    return result;
+}
+
 /* Evaluate an expression that falls through if truthy, or jumps to the next
    branch if falsey. */
 void lily_eval_entry_condition(lily_emit_state *emit, lily_expr_state *es)
@@ -4292,6 +4343,13 @@ void lily_eval_entry_condition(lily_emit_state *emit, lily_expr_state *es)
     if (is_false_tree(ast)) {
         /* Write a fake jump for block transition to skip over. */
         lily_u16_write_1(emit->patches, 0);
+        return;
+    }
+
+    if (is_compare_tree(ast)) {
+        /* Run the compare op with 1 so that it finishes by writing a falsey
+           jump to be patched. */
+        eval_compare_op(emit, ast, 1);
         return;
     }
 
@@ -4330,8 +4388,14 @@ void lily_eval_lambda_body(lily_emit_state *emit, lily_expr_state *es,
         lily_type *full_type)
 {
     lily_type *wanted_type = NULL;
+
     if (full_type)
         wanted_type = full_type->subtypes[0];
+
+    /* Don't send `Unit` down, because it can cause syntax errors if it's used
+       as a solution for generics. */
+    if (wanted_type == lily_unit_type)
+        wanted_type = lily_question_type;
 
     eval_tree(emit, es->root, wanted_type);
 
@@ -4400,7 +4464,7 @@ void lily_eval_raise(lily_emit_state *emit, lily_expr_state *es)
 /* This prepares __main__ to be called and sets up the next pass. */
 void lily_prepare_main(lily_emit_state *emit, lily_function_val *main_func)
 {
-    int register_count = emit->block->next_reg_spot;
+    uint16_t register_count = emit->block->next_reg_spot;
 
     lily_u16_write_1(emit->code, o_vm_exit);
 

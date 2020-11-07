@@ -2,13 +2,17 @@
 # define LILY_SYMTAB_H
 
 # include "lily_core_types.h"
-# include "lily_value_structs.h"
-# include "lily_value_stack.h"
+# include "lily_value.h"
+
+typedef struct lily_value_stack_ {
+    lily_value **data;
+    uint16_t pos;
+    uint16_t size;
+    uint32_t pad;
+} lily_value_stack;
 
 typedef struct lily_symtab_ {
-    lily_value_stack *literals;
-
-    lily_module_entry *builtin_module;
+    lily_module_entry *prelude_module;
     lily_module_entry *active_module;
 
     /* Defined functions that go out of scope are stuffed in here, unless
@@ -17,6 +21,8 @@ typedef struct lily_symtab_ {
 
     /* Ditto, for classes. */
     lily_class *hidden_class_chain;
+
+    lily_value_stack *literals;
 
     /* Each class gets a unique id. This is mostly for the builtin classes
        which have some special behavior sometimes. */
@@ -42,7 +48,7 @@ typedef struct lily_symtab_ {
 } lily_symtab;
 
 lily_symtab *lily_new_symtab(void);
-void lily_set_builtin(lily_symtab *, lily_module_entry *);
+void lily_set_prelude(lily_symtab *, lily_module_entry *);
 void lily_free_module_symbols(lily_symtab *, lily_module_entry *);
 void lily_hide_module_symbols(lily_symtab *, lily_module_entry *);
 void lily_free_properties(lily_class *);
@@ -50,11 +56,14 @@ void lily_rewind_symtab(lily_symtab *, lily_module_entry *, lily_class *,
         lily_var *, lily_boxed_sym *, int);
 void lily_free_symtab(lily_symtab *);
 
+lily_value *lily_literal_at(lily_symtab *, uint16_t);
 lily_literal *lily_get_integer_literal(lily_symtab *, int64_t);
 lily_literal *lily_get_double_literal(lily_symtab *, double);
-lily_literal *lily_get_bytestring_literal(lily_symtab *, const char *, int);
+lily_literal *lily_get_bytestring_literal(lily_symtab *, const char *,
+        uint32_t);
 lily_literal *lily_get_string_literal(lily_symtab *, const char *);
 lily_literal *lily_get_unit_literal(lily_symtab *);
+void lily_new_function_literal(lily_symtab *, lily_var *, lily_value *);
 
 lily_class *lily_find_class(lily_module_entry *, const char *);
 lily_var *lily_find_var(lily_module_entry *, const char *);

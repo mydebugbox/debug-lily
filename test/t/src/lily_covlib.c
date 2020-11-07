@@ -1,9 +1,8 @@
 #include <string.h>
 
 #include "lily.h"
-#include "lily_int_code_iter.h"
-
 #include "lily_covlib_bindings.h"
+#include "lily_int_code_iter.h"
 
 LILY_COVLIB_EXPORT
 lily_call_entry_func lily_covlib_call_table[];
@@ -12,7 +11,15 @@ typedef struct lily_covlib_Foreign_ {
     LILY_FOREIGN_HEADER
 } lily_covlib_Foreign;
 
-void destroy_Foreign(lily_covlib_Foreign *f) {}
+typedef struct lily_covlib_ForeignGeneric_ {
+    LILY_FOREIGN_HEADER
+} lily_covlib_ForeignGeneric;
+
+void destroy_Foreign(lily_covlib_Foreign *f)
+{
+    (void)f;
+}
+
 void lily_covlib_Foreign_new(lily_state *s)
 {
     INIT_Foreign(s);
@@ -102,20 +109,17 @@ void lily_covlib__cover_id_checks(lily_state *s)
 {
     int ok = 1;
 
-    if (lily_arg_isa(s, 0, LILY_ID_COROUTINE) == 0)
+    if (lily_arg_isa(s, 0, LILY_ID_UNIT) == 0)
         ok = 0;
 
-    if (lily_arg_isa(s, 1, LILY_ID_UNIT) == 0)
+    if (lily_arg_isa(s, 1, ID_Container(s)) == 0)
         ok = 0;
 
-    if (lily_arg_isa(s, 2, ID_Container(s)) == 0)
-        ok = 0;
-
-    if (lily_arg_isa(s, 3, LILY_ID_STRING) == 0)
+    if (lily_arg_isa(s, 2, LILY_ID_STRING) == 0)
         ok = 0;
 
     /* This needs to be covered too. Might as well do it here. */
-    (void)lily_arg_generic(s, 3);
+    (void)lily_arg_generic(s, 2);
 
     lily_return_boolean(s, ok);
 }
@@ -125,13 +129,12 @@ void lily_covlib__cover_value_as(lily_state *s)
     (void)lily_as_byte      (lily_arg_value(s, 0));
     (void)lily_as_bytestring(lily_arg_value(s, 1));
     (void)lily_as_container (lily_arg_value(s, 2));
-    (void)lily_as_coroutine (lily_arg_value(s, 3));
-    (void)lily_as_double    (lily_arg_value(s, 4));
-    (void)lily_as_function  (lily_arg_value(s, 5));
-    (void)lily_as_generic   (lily_arg_value(s, 6));
-    (void)lily_as_hash      (lily_arg_value(s, 7));
-    (void)lily_as_integer   (lily_arg_value(s, 8));
-    (void)lily_as_string    (lily_arg_value(s, 9));
+    (void)lily_as_double    (lily_arg_value(s, 3));
+    (void)lily_as_function  (lily_arg_value(s, 4));
+    (void)lily_as_generic   (lily_arg_value(s, 5));
+    (void)lily_as_hash      (lily_arg_value(s, 6));
+    (void)lily_as_integer   (lily_arg_value(s, 7));
+    (void)lily_as_string    (lily_arg_value(s, 8));
     lily_return_unit(s);
 }
 
@@ -155,6 +158,19 @@ void lily_covlib__cover_optional_boolean(lily_state *s)
     lily_return_integer(s, total);
 }
 
+void lily_covlib__cover_optional_keyarg_call(lily_state *s)
+{
+    lily_call_prepare(s, lily_arg_function(s, 0));
+
+    lily_value *result = lily_call_result(s);
+
+    lily_push_unset(s);
+    lily_push_integer(s, 1);
+    lily_call(s, 2);
+
+    lily_return_value(s, result);
+}
+
 void lily_covlib__cover_optional_string(lily_state *s)
 {
     const char *arg_a = lily_optional_string_raw(s, 0, "");
@@ -173,7 +189,6 @@ void lily_covlib__cover_value_group(lily_state *s)
         lily_isa_boolean,
         lily_isa_byte,
         lily_isa_bytestring,
-        lily_isa_coroutine,
         lily_isa_double,
         lily_isa_empty_variant,
         lily_isa_file,
@@ -233,6 +248,7 @@ static void ignore_render(const char *to_render, void *data)
 
 static void misc_dup_import_hook(lily_state *s, const char *target)
 {
+    (void)target;
     lily_import_use_local_dir(s, "");
     lily_import_string(s, "asdf.lily", "var v = 10");
     lily_import_string(s, "asdf.lily", "var v = 10");
@@ -242,6 +258,7 @@ static void misc_dup_import_hook(lily_state *s, const char *target)
 
 static void misc_ldata_import_hook(lily_state *s, const char *target)
 {
+    (void)target;
     lily_import_use_local_dir(s, "");
     lily_import_library_data(s, "asdf.xyz", lily_covlib_info_table, lily_covlib_call_table);
 }
@@ -265,6 +282,8 @@ static void misc_no_global_import_hook(lily_state *s, const char *target)
 
 void lily_covlib__cover_misc_api(lily_state *s)
 {
+    (void)s;
+
     lily_config config;
     lily_config_init(&config);
     config.render_func = ignore_render;
