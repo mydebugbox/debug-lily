@@ -12,32 +12,38 @@ jobs:
   include:
     - os: linux
       arch: amd64
+      dist: bionic
       env:
         - MATRIX_EVAL=""
 
     - os: linux
       arch: amd64
       compiler: clang
+      dist: bionic
       env:
         - MATRIX_EVAL=""
 
     - os: linux
       arch: arm64
+      dist: bionic
       env:
         - MATRIX_EVAL=""
 
     - os: linux
       arch: ppc64le
+      dist: bionic
       env:
         - MATRIX_EVAL=""
 
     - os: linux
       arch: s390x
+      dist: bionic
       env:
         - MATRIX_EVAL=""
 
     - os: osx
       osx_image: xcode8
+      dist: bionic
       env:
         - MATRIX_EVAL=""
 
